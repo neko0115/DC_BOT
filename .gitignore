@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.env
+secrets.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Runtime data
+data/
+
+# Library runtime content
+library/*
+!library/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary
+tmp/
+temp/
+*.tmp
