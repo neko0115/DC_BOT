@@ -4,6 +4,7 @@ version = "0.6.1"
 description = "Private Discord music assistant with optional Gemini tools"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+  "aiohttp>=3.12,<4",
   "discord.py[voice]>=2.5,<3",
   "discord-ext-voice-recv @ git+https://github.com/rdphillips7/discord-ext-voice-recv.git@ddd28601fe556f585b869e215f29c8236b95f88f",
   "faster-whisper>=1.2,<2",

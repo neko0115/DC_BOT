@@ -35,6 +35,13 @@ class SettingsTests(unittest.TestCase):
         self.assertIsNone(settings.youtube_cookies_from_browser)
         self.assertIsNone(settings.youtube_cookies_file)
         self.assertIsNone(settings.youtube_po_token)
+        self.assertTrue(settings.tool_gateway_enabled)
+        self.assertTrue(settings.tool_gateway_embedded)
+        self.assertEqual(settings.tool_gateway_host, "127.0.0.1")
+        self.assertEqual(settings.tool_gateway_port, 8765)
+        self.assertEqual(settings.tool_gateway_refresh_seconds, 30)
+        self.assertEqual(settings.tool_gateway_timeout_seconds, 60)
+        self.assertIsNone(settings.tool_gateway_token)
 
     def test_youtube_browser_cookie_setting_is_loaded(self) -> None:
         environment = {
@@ -45,3 +52,25 @@ class SettingsTests(unittest.TestCase):
             settings = load_settings(Path(directory))
 
         self.assertEqual(settings.youtube_cookies_from_browser, "chrome")
+
+    def test_tool_gateway_values_can_be_overridden(self) -> None:
+        environment = {
+            "DISCORD_TOKEN": "test-token",
+            "TOOL_GATEWAY_ENABLED": "true",
+            "TOOL_GATEWAY_EMBEDDED": "false",
+            "TOOL_GATEWAY_HOST": "localhost",
+            "TOOL_GATEWAY_PORT": "9001",
+            "TOOL_GATEWAY_REFRESH_SECONDS": "12",
+            "TOOL_GATEWAY_TIMEOUT_SECONDS": "45",
+            "TOOL_GATEWAY_TOKEN": "secret",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, environment, clear=True):
+            settings = load_settings(Path(directory))
+
+        self.assertTrue(settings.tool_gateway_enabled)
+        self.assertFalse(settings.tool_gateway_embedded)
+        self.assertEqual(settings.tool_gateway_host, "localhost")
+        self.assertEqual(settings.tool_gateway_port, 9001)
+        self.assertEqual(settings.tool_gateway_refresh_seconds, 12)
+        self.assertEqual(settings.tool_gateway_timeout_seconds, 45)
+        self.assertEqual(settings.tool_gateway_token, "secret")

@@ -97,8 +97,10 @@ class GeminiAssistant:
             raise RuntimeError("尚未設定 GEMINI_API_KEY。")
 
         client = self._get_client()
-        tools = self._tools_for_request(prompt)
+        await self.router.refresh_external_tools()
         request_text = self._request_text(prompt)
+        tools = self._tools_for_request(prompt)
+        tools.extend(self.router.external_declarations_for(request_text))
         tool_instruction = (
             "You may only request actions through the supplied tools. "
             "Use Google Search when a current recommendation, event, product, release, or other fresh web information would improve the answer. "

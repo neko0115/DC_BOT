@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from urllib.parse import quote_plus
 
@@ -8,6 +9,9 @@ import discord
 from discord_ai_assistant.music.library import LibraryService
 from discord_ai_assistant.music.player import MusicManager
 from discord_ai_assistant.storage.database import Database
+from discord_ai_assistant.tool_gateway.client import ToolGatewayClient, ToolGatewayUnavailable
+
+LOGGER = logging.getLogger(__name__)
 
 TOOL_DECLARATIONS = [
     {
@@ -49,16 +53,46 @@ class ToolContext:
     is_dj: bool
     voice_channel: discord.VoiceChannel | discord.StageChannel | None
 
+    def external_payload(self) -> dict[str, object]:
+        channel = self.voice_channel
+        return {
+            "guild_id": self.guild_id,
+            "user_id": self.user_id,
+            "is_dj": self.is_dj,
+            "voice_channel_id": channel.id if channel else None,
+            "voice_channel_name": channel.name if channel else None,
+        }
+
 
 class ToolRouter:
-    """Executes a small allow-list of actions after application-level checks."""
+    """Executes built-in actions and optional repository-level external tools."""
 
-    def __init__(self, library: LibraryService, music: MusicManager, database: Database) -> None:
+    def __init__(
+        self,
+        library: LibraryService,
+        music: MusicManager,
+        database: Database,
+        external_client: ToolGatewayClient | None = None,
+    ) -> None:
         self.library = library
         self.music = music
         self.database = database
+        self.external_client = external_client
 
-    async def execute(self, name: str, arguments: dict[str, object], context: ToolContext) -> dict[str, str]:
+    async def refresh_external_tools(self) -> None:
+        if self.external_client is None:
+            return
+        try:
+            await self.external_client.refresh()
+        except ToolGatewayUnavailable as error:
+            LOGGER.warning("External tool gateway is unavailable: %s", error)
+
+    def external_declarations_for(self, prompt: str) -> list[dict[str, object]]:
+        if self.external_client is None:
+            return []
+        return self.external_client.declarations_for(prompt)
+
+    async def execute(self, name: str, arguments: dict[str, object], context: ToolContext) -> dict[str, object]:
         if name == "queue_library_track":
             return await self._queue_library_track(arguments, context)
         if name == "show_queue":
@@ -66,11 +100,16 @@ class ToolRouter:
         if name == "youtube_search_link":
             query = self._string(arguments, "query")
             return {"message": f"YouTube 搜尋連結：https://www.youtube.com/results?search_query={quote_plus(query)}"}
+        if self.external_client is not None and self.external_client.handles(name):
+            try:
+                return await self.external_client.invoke(name, arguments, context.external_payload())
+            except ToolGatewayUnavailable as error:
+                return {"message": f"外接工具目前無法使用：{error}"}
         return {"message": "此操作不在允許清單內。"}
 
     async def _queue_library_track(
         self, arguments: dict[str, object], context: ToolContext
-    ) -> dict[str, str]:
+    ) -> dict[str, object]:
         query = self._string(arguments, "query")
         position = self._string(arguments, "position")
         if position not in {"queue", "next", "now"}:
@@ -91,7 +130,7 @@ class ToolRouter:
             await self.music.enqueue(context.guild_id, track, context.user_id, next_up=position == "next")
         return {"message": f"已加入：{track.title}"}
 
-    def _show_queue(self, context: ToolContext) -> dict[str, str]:
+    def _show_queue(self, context: ToolContext) -> dict[str, object]:
         current, upcoming = self.music.queue_view(context.guild_id)
         lines = [f"目前：{current.track.title}" if current else "目前沒有播放中的歌曲。"]
         lines.extend(f"{index}. {item.track.title}" for index, item in enumerate(upcoming, start=1))

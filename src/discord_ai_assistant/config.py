@@ -38,6 +38,13 @@ class Settings:
     youtube_cookies_from_browser: str | None
     youtube_cookies_file: Path | None
     youtube_po_token: str | None
+    tool_gateway_enabled: bool
+    tool_gateway_embedded: bool
+    tool_gateway_host: str
+    tool_gateway_port: int
+    tool_gateway_token: str | None
+    tool_gateway_refresh_seconds: float
+    tool_gateway_timeout_seconds: float
 
     @property
     def database_path(self) -> Path:
@@ -46,6 +53,10 @@ class Settings:
     @property
     def library_path(self) -> Path:
         return self.project_root / "library"
+
+    @property
+    def tools_path(self) -> Path:
+        return self.project_root / "tools"
 
 
 def load_settings(project_root: Path) -> Settings:
@@ -97,6 +108,17 @@ def load_settings(project_root: Path) -> Settings:
         if not youtube_cookies_file.is_file():
             raise RuntimeError(f"YOUTUBE_COOKIES_FILE does not exist: {youtube_cookies_file}")
 
+    tool_gateway_host = os.getenv("TOOL_GATEWAY_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    tool_gateway_port = int(os.getenv("TOOL_GATEWAY_PORT", "8765"))
+    tool_gateway_refresh_seconds = float(os.getenv("TOOL_GATEWAY_REFRESH_SECONDS", "30"))
+    tool_gateway_timeout_seconds = float(os.getenv("TOOL_GATEWAY_TIMEOUT_SECONDS", "60"))
+    if not 1 <= tool_gateway_port <= 65535:
+        raise RuntimeError("TOOL_GATEWAY_PORT must be between 1 and 65535.")
+    if tool_gateway_refresh_seconds < 1:
+        raise RuntimeError("TOOL_GATEWAY_REFRESH_SECONDS must be at least 1.")
+    if tool_gateway_timeout_seconds < 1:
+        raise RuntimeError("TOOL_GATEWAY_TIMEOUT_SECONDS must be at least 1.")
+
     return Settings(
         project_root=project_root,
         discord_token=token,
@@ -128,4 +150,13 @@ def load_settings(project_root: Path) -> Settings:
         youtube_cookies_from_browser=youtube_cookies_from_browser,
         youtube_cookies_file=youtube_cookies_file,
         youtube_po_token=os.getenv("YOUTUBE_PO_TOKEN", "").strip() or None,
+        tool_gateway_enabled=os.getenv("TOOL_GATEWAY_ENABLED", "true").strip().lower()
+        in {"1", "true", "yes", "on"},
+        tool_gateway_embedded=os.getenv("TOOL_GATEWAY_EMBEDDED", "true").strip().lower()
+        in {"1", "true", "yes", "on"},
+        tool_gateway_host=tool_gateway_host,
+        tool_gateway_port=tool_gateway_port,
+        tool_gateway_token=os.getenv("TOOL_GATEWAY_TOKEN", "").strip() or None,
+        tool_gateway_refresh_seconds=tool_gateway_refresh_seconds,
+        tool_gateway_timeout_seconds=tool_gateway_timeout_seconds,
     )

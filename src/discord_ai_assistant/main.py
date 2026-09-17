@@ -14,6 +14,8 @@ from discord_ai_assistant.config import Settings, load_settings
 from discord_ai_assistant.music.library import LibraryService
 from discord_ai_assistant.music.player import MusicManager, configure_event_loop
 from discord_ai_assistant.storage.database import Database
+from discord_ai_assistant.tool_gateway.client import ToolGatewayClient
+from discord_ai_assistant.tool_gateway.server import ToolGatewayServer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -33,11 +35,39 @@ class AssistantBot(commands.Bot):
             youtube_cookies_file=settings.youtube_cookies_file,
             youtube_po_token=settings.youtube_po_token,
         )
-        router = ToolRouter(self.library, self.music, self.database)
-        self.ai = GeminiAssistant(settings.gemini_api_key, settings.gemini_model, router, settings.persona_timezone)
+
+        external_client: ToolGatewayClient | None = None
+        self.tool_gateway_server: ToolGatewayServer | None = None
+        if settings.tool_gateway_enabled:
+            external_client = ToolGatewayClient(
+                host=settings.tool_gateway_host,
+                port=settings.tool_gateway_port,
+                token=settings.tool_gateway_token,
+                refresh_seconds=settings.tool_gateway_refresh_seconds,
+                request_timeout_seconds=settings.tool_gateway_timeout_seconds + 5,
+            )
+            if settings.tool_gateway_embedded:
+                self.tool_gateway_server = ToolGatewayServer(
+                    settings.tools_path,
+                    host=settings.tool_gateway_host,
+                    port=settings.tool_gateway_port,
+                    token=settings.tool_gateway_token,
+                    invocation_timeout_seconds=settings.tool_gateway_timeout_seconds,
+                )
+
+        self.tool_router = ToolRouter(self.library, self.music, self.database, external_client)
+        self.ai = GeminiAssistant(
+            settings.gemini_api_key,
+            settings.gemini_model,
+            self.tool_router,
+            settings.persona_timezone,
+        )
 
     async def setup_hook(self) -> None:
         configure_event_loop(asyncio.get_running_loop())
+        if self.tool_gateway_server is not None:
+            await self.tool_gateway_server.start()
+            await self.tool_router.refresh_external_tools()
         await self.add_cog(
             AssistantCommands(self, self.settings, self.database, self.library, self.music, self.ai)
         )
@@ -57,6 +87,8 @@ class AssistantBot(commands.Bot):
             await commands_cog.announce_version_if_needed()
 
     async def close(self) -> None:
+        if self.tool_gateway_server is not None:
+            await self.tool_gateway_server.close()
         self.database.close()
         await super().close()
 
