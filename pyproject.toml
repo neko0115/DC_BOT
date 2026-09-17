@@ -10,6 +10,7 @@ dependencies = [
   "faster-whisper>=1.2,<2",
   "google-genai>=2.0,<3",
   "python-dotenv>=1.0,<2",
+  "tzdata>=2025.2,<2027",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,7 @@ tts-local = [
 [project.scripts]
 discord-ai-assistant = "discord_ai_assistant.main:main"
 moxue-capture-agent = "discord_ai_assistant.capture_agent.cli:main"
+moxue-tts-worker = "discord_ai_assistant.voice.worker_server:main"
 
 [build-system]
 requires = ["setuptools>=68"]

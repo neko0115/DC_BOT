@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from discord_ai_assistant.ai.memory import is_disallowed_memory
 from discord_ai_assistant.models import Track, UserActivity, UserMemory
 
 MAX_MEMORY_CONTEXT_CHARACTERS = 1_200
@@ -201,6 +202,8 @@ class Database:
             raise ValueError("記憶分類需介於 1 到 40 個字元。")
         if not normalized_content or len(normalized_content) > 300:
             raise ValueError("記憶內容需介於 1 到 300 個字元。")
+        if is_disallowed_memory(normalized_category, normalized_content):
+            raise ValueError("這項內容像是敏感資料或修改墨雪規則的指令，因此不會存入記憶。")
         cursor = self.connection.execute(
             "INSERT INTO user_memories(guild_id, user_id, category, content) VALUES (?, ?, ?, ?)",
             (guild_id, user_id, normalized_category, normalized_content),
@@ -272,6 +275,8 @@ class Database:
         lines: list[str] = []
         remaining = MAX_MEMORY_CONTEXT_CHARACTERS
         for memory in reversed(memories):
+            if is_disallowed_memory(memory.category, memory.content):
+                continue
             line = f"- [{memory.category}] {memory.content}"
             if len(line) > remaining:
                 break

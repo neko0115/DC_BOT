@@ -50,6 +50,12 @@ class Settings:
     tts_kokoro_enabled: bool
     tts_kokoro_voice: str
     tts_kokoro_speed: float
+    tts_remote_workers: str
+    tts_worker_token: str | None
+    tts_worker_mode: str
+    tts_worker_health_timeout_seconds: float
+    tts_worker_request_timeout_seconds: float
+    tts_worker_failure_cooldown_seconds: float
     youtube_cookies_from_browser: str | None
     youtube_cookies_file: Path | None
     youtube_po_token: str | None
@@ -116,6 +122,15 @@ def load_settings(project_root: Path) -> Settings:
     tts_kokoro_speed = float(os.getenv("TTS_KOKORO_SPEED", "1.0"))
     if not 0.5 <= tts_kokoro_speed <= 2.0:
         raise RuntimeError("TTS_KOKORO_SPEED must be between 0.5 and 2.0.")
+    tts_worker_health_timeout_seconds = float(os.getenv("TTS_WORKER_HEALTH_TIMEOUT_SECONDS", "2"))
+    tts_worker_request_timeout_seconds = float(os.getenv("TTS_WORKER_REQUEST_TIMEOUT_SECONDS", "45"))
+    tts_worker_failure_cooldown_seconds = float(os.getenv("TTS_WORKER_FAILURE_COOLDOWN_SECONDS", "15"))
+    if not 0.5 <= tts_worker_health_timeout_seconds <= 15:
+        raise RuntimeError("TTS_WORKER_HEALTH_TIMEOUT_SECONDS must be between 0.5 and 15.")
+    if not 5 <= tts_worker_request_timeout_seconds <= 180:
+        raise RuntimeError("TTS_WORKER_REQUEST_TIMEOUT_SECONDS must be between 5 and 180.")
+    if not 0 <= tts_worker_failure_cooldown_seconds <= 600:
+        raise RuntimeError("TTS_WORKER_FAILURE_COOLDOWN_SECONDS must be between 0 and 600.")
 
     persona_timezone = os.getenv("PERSONA_TIMEZONE", "Asia/Taipei").strip() or "Asia/Taipei"
     try:
@@ -185,6 +200,12 @@ def load_settings(project_root: Path) -> Settings:
         in {"1", "true", "yes", "on"},
         tts_kokoro_voice=os.getenv("TTS_KOKORO_VOICE", "zf_xiaoni").strip() or "zf_xiaoni",
         tts_kokoro_speed=tts_kokoro_speed,
+        tts_remote_workers=os.getenv("TTS_REMOTE_WORKERS", "").strip(),
+        tts_worker_token=os.getenv("TTS_WORKER_TOKEN", "").strip() or None,
+        tts_worker_mode=os.getenv("TTS_WORKER_MODE", "auto").strip().lower() or "auto",
+        tts_worker_health_timeout_seconds=tts_worker_health_timeout_seconds,
+        tts_worker_request_timeout_seconds=tts_worker_request_timeout_seconds,
+        tts_worker_failure_cooldown_seconds=tts_worker_failure_cooldown_seconds,
         youtube_cookies_from_browser=youtube_cookies_from_browser,
         youtube_cookies_file=youtube_cookies_file,
         youtube_po_token=os.getenv("YOUTUBE_PO_TOKEN", "").strip() or None,

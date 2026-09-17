@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 
 from discord_ai_assistant.ai.gemini import AssistantReply
 from discord_ai_assistant.ai.tools import ToolRouter
+from discord_ai_assistant.commands import AssistantCommands
 from discord_ai_assistant.tool_effect_commands import ToolEffectAssistantCommands, split_discord_message
 
 
@@ -39,6 +41,15 @@ class ToolEffectTests(unittest.TestCase):
 
     def test_tool_effect_cog_keeps_original_name(self) -> None:
         self.assertEqual(ToolEffectAssistantCommands.__cog_name__, "AssistantCommands")
+
+    def test_runtime_cog_overrides_legacy_five_message_history(self) -> None:
+        self.assertIsNot(ToolEffectAssistantCommands._with_history, AssistantCommands._with_history)
+
+    def test_native_knowledge_help_uses_non_failing_message_reference(self) -> None:
+        source = inspect.getsource(ToolEffectAssistantCommands._deliver_knowledge_help)
+        self.assertIn("to_reference(fail_if_not_exists=False)", source)
+        self.assertIn("message.channel.send(", source)
+        self.assertNotIn("message.reply(", source)
 
 
 if __name__ == "__main__":
