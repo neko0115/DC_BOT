@@ -14,6 +14,10 @@ class Track:
     stream_url: str | None = None
     audio_path: str | None = None
     delete_after_play: bool = False
+    track_name: str | None = None
+    artist_name: str | None = None
+    album_name: str | None = None
+    duration: float | None = None
 
     def path(self, library_root: Path) -> Path:
         return library_root / self.stored_name

@@ -22,6 +22,8 @@ class ToolRegistryTests(unittest.TestCase):
             catalog = registry.catalog()
             self.assertEqual(catalog[0]["name"], "sample")
             self.assertEqual(catalog[0]["actions"][0]["function_name"], "x_sample_echo")
+            self.assertFalse(catalog[0]["actions"][0]["requires_dj"])
+            self.assertEqual(catalog[0]["actions"][0]["trigger_keywords"], ["sample"])
 
             result = asyncio.run(
                 registry.invoke("sample", "echo", {"text": "hello"}, {"guild_id": 123})
@@ -41,8 +43,24 @@ class ToolRegistryTests(unittest.TestCase):
             self.assertIn("sample", registry.errors)
             self.assertIn("CHANGELOG.md", registry.errors["sample"])
 
+    def test_dj_only_action_is_enforced_by_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tools_root = Path(directory)
+            self._write_tool(tools_root / "sample", requires_dj=True)
+            registry = ToolRegistry(tools_root)
+            registry.reload()
+
+            with self.assertRaises(PermissionError):
+                asyncio.run(
+                    registry.invoke("sample", "echo", {"text": "hello"}, {"guild_id": 123, "is_dj": False})
+                )
+            result = asyncio.run(
+                registry.invoke("sample", "echo", {"text": "hello"}, {"guild_id": 123, "is_dj": True})
+            )
+            self.assertEqual(result["text"], "hello")
+
     @staticmethod
-    def _write_tool(tool_root: Path) -> None:
+    def _write_tool(tool_root: Path, *, requires_dj: bool = False) -> None:
         tool_root.mkdir(parents=True)
         manifest = {
             "name": "sample",
@@ -55,6 +73,7 @@ class ToolRegistryTests(unittest.TestCase):
             "actions": {
                 "echo": {
                     "description": "echo text",
+                    "requires_dj": requires_dj,
                     "parameters": {
                         "type": "object",
                         "properties": {"text": {"type": "string"}},

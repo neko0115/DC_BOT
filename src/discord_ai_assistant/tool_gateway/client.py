@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import logging
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
 
 LOGGER = logging.getLogger(__name__)
+_TRIGGER_VARIANTS = str.maketrans({"録": "錄"})
+
+
+def _normalize_trigger_text(value: str) -> str:
+    """Normalize user/tool text so spacing, punctuation and common CJK glyph variants do not break routing."""
+    normalized = unicodedata.normalize("NFKC", value).translate(_TRIGGER_VARIANTS).lower()
+    return "".join(character for character in normalized if character.isalnum())
 
 
 class ToolGatewayUnavailable(RuntimeError):
@@ -23,6 +31,7 @@ class ExternalAction:
     parameters: dict[str, object]
     trigger_keywords: tuple[str, ...]
     always_available: bool
+    requires_dj: bool
 
     def declaration(self) -> dict[str, object]:
         return {
@@ -74,13 +83,23 @@ class ToolGatewayClient:
             raise ToolGatewayUnavailable(str(error)) from error
         self._replace_catalog(payload)
 
-    def declarations_for(self, prompt: str) -> list[dict[str, object]]:
-        text = prompt.lower()
-        declarations: list[dict[str, object]] = []
+    def declarations_for(self, prompt: str, *, is_dj: bool) -> list[dict[str, object]]:
+        text = _normalize_trigger_text(prompt)
+        matched_actions: list[ExternalAction] = []
         for action in self.actions:
-            if action.always_available or any(keyword in text for keyword in action.trigger_keywords):
-                declarations.append(action.declaration())
-        return declarations
+            if action.requires_dj and not is_dj:
+                continue
+            if action.always_available or any(keyword and keyword in text for keyword in action.trigger_keywords):
+                matched_actions.append(action)
+        if matched_actions:
+            LOGGER.info(
+                "External tool routing selected %s action(s): %s",
+                len(matched_actions),
+                ", ".join(action.function_name for action in matched_actions),
+            )
+        else:
+            LOGGER.info("External tool routing selected no actions")
+        return [action.declaration() for action in matched_actions]
 
     def handles(self, function_name: str) -> bool:
         return function_name in self._actions
@@ -94,6 +113,8 @@ class ToolGatewayClient:
         action = self._actions.get(function_name)
         if action is None:
             raise ValueError(f"Unknown external function: {function_name}")
+        if action.requires_dj and context.get("is_dj") is not True:
+            raise PermissionError("此工具操作僅限 DJ 或管理員。")
         timeout = aiohttp.ClientTimeout(total=self.request_timeout_seconds)
         body = {"action": action.action_name, "arguments": arguments, "context": context}
         try:
@@ -104,6 +125,8 @@ class ToolGatewayClient:
                         payload = await response.json()
                     except Exception:
                         payload = {"error": (await response.text())[:500]}
+                    if response.status == 403:
+                        raise PermissionError("此工具操作僅限 DJ 或管理員。")
                     if response.status != 200:
                         raise ToolGatewayUnavailable(
                             f"{action.tool_name}/{action.action_name} returned HTTP {response.status}: {payload}"
@@ -128,7 +151,13 @@ class ToolGatewayClient:
             action_items = tool.get("actions", [])
             if not isinstance(tool_name, str) or not isinstance(keywords, list) or not isinstance(action_items, list):
                 continue
-            normalized_keywords = tuple(item.lower() for item in keywords if isinstance(item, str) and item)
+            normalized_tool_keywords = tuple(
+                normalized
+                for item in keywords
+                if isinstance(item, str) and item
+                for normalized in [_normalize_trigger_text(item)]
+                if normalized
+            )
             for item in action_items:
                 if not isinstance(item, dict):
                     continue
@@ -136,18 +165,31 @@ class ToolGatewayClient:
                 function_name = item.get("function_name")
                 description = item.get("description")
                 parameters = item.get("parameters")
+                requires_dj = item.get("requires_dj", False)
+                action_keywords = item.get("trigger_keywords")
                 if not all(isinstance(value, str) for value in (action_name, function_name, description)):
                     continue
-                if not isinstance(parameters, dict):
+                if not isinstance(parameters, dict) or not isinstance(requires_dj, bool):
                     continue
+                if isinstance(action_keywords, list):
+                    normalized_action_keywords = tuple(
+                        normalized
+                        for keyword in action_keywords
+                        if isinstance(keyword, str) and keyword
+                        for normalized in [_normalize_trigger_text(keyword)]
+                        if normalized
+                    )
+                else:
+                    normalized_action_keywords = normalized_tool_keywords
                 actions[function_name] = ExternalAction(
                     tool_name=tool_name,
                     action_name=action_name,
                     function_name=function_name,
                     description=description,
                     parameters=parameters,
-                    trigger_keywords=normalized_keywords,
+                    trigger_keywords=normalized_action_keywords,
                     always_available=always_available,
+                    requires_dj=requires_dj,
                 )
         self._actions = actions
         load_errors = payload.get("load_errors")

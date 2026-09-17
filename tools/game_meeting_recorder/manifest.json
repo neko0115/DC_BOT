@@ -1,0 +1,128 @@
+{
+  "name": "game_meeting_recorder",
+  "version": "0.1.0",
+  "description": "Record periodic game voice narration and a fixed on-screen chat region into a timestamped meeting/session transcript for later summarization.",
+  "enabled": true,
+  "entrypoint": "tool.py",
+  "trigger_keywords": [
+    "會議紀錄",
+    "會議記錄",
+    "遊戲紀錄",
+    "遊戲記錄",
+    "遊戲會議",
+    "開始記錄",
+    "開始紀錄",
+    "停止記錄",
+    "停止紀錄",
+    "語音紀錄",
+    "聊天紀錄",
+    "逐字稿",
+    "會議摘要",
+    "摘要頻道",
+    "音訊裝置",
+    "loopback",
+    "聊天室 ocr",
+    "ocr 校正",
+    "meeting recorder"
+  ],
+  "always_available": false,
+  "actions": {
+    "status": {
+      "description": "Show recorder state, current configuration readiness, event counts, and dependency availability.",
+      "requires_dj": false,
+      "trigger_keywords": ["會議紀錄工具狀態", "會議記錄工具狀態", "紀錄工具狀態", "記錄工具狀態", "工具狀態", "錄製狀態"],
+      "parameters": {"type": "object", "properties": {}}
+    },
+    "list_audio_devices": {
+      "description": "List Windows playback devices and loopback recording devices so the correct game output can be selected.",
+      "requires_dj": true,
+      "trigger_keywords": ["音訊裝置", "音效裝置", "錄音裝置", "輸出裝置", "loopback裝置", "列出裝置"],
+      "parameters": {"type": "object", "properties": {}}
+    },
+    "configure_audio": {
+      "description": "Configure loopback audio capture and Whisper transcription settings.",
+      "requires_dj": true,
+      "trigger_keywords": ["設定音訊", "音訊設定", "設定錄音", "錄音設定", "設定loopback", "whisper設定"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "loopback_device_id": {"type": ["string", "null"], "description": "Exact SoundCard loopback device id. Null selects the loopback corresponding to the default speaker when possible."},
+          "sample_rate": {"type": "integer", "minimum": 16000, "maximum": 96000},
+          "speech_threshold_dbfs": {"type": "number", "minimum": -70, "maximum": -5},
+          "silence_seconds": {"type": "number", "minimum": 0.4, "maximum": 5},
+          "pre_roll_seconds": {"type": "number", "minimum": 0, "maximum": 3},
+          "max_segment_seconds": {"type": "number", "minimum": 5, "maximum": 120},
+          "whisper_model": {"type": "string"},
+          "whisper_language": {"type": ["string", "null"]},
+          "whisper_beam_size": {"type": "integer", "minimum": 1, "maximum": 10},
+          "whisper_initial_prompt": {"type": "string"}
+        }
+      }
+    },
+    "configure_chat": {
+      "description": "Configure the fixed screen region containing in-game text chat. Set enabled=false to disable OCR.",
+      "requires_dj": true,
+      "trigger_keywords": ["聊天室ocr", "ocr設定", "設定ocr", "聊天室設定", "聊天文字設定", "文字擷取設定"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "enabled": {"type": "boolean"},
+          "x": {"type": "integer", "minimum": 0},
+          "y": {"type": "integer", "minimum": 0},
+          "width": {"type": "integer", "minimum": 20},
+          "height": {"type": "integer", "minimum": 20},
+          "poll_seconds": {"type": "number", "minimum": 0.2, "maximum": 5},
+          "change_threshold": {"type": "number", "minimum": 0.001, "maximum": 0.5},
+          "ocr_min_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "scale": {"type": "number", "minimum": 1, "maximum": 4}
+        }
+      }
+    },
+    "configure_output": {
+      "description": "Configure the Discord channel intended to receive the final meeting highlights. This tool records the target id; publishing is handled by Moxue integration.",
+      "requires_dj": true,
+      "trigger_keywords": ["摘要頻道", "會議摘要頻道", "設定摘要頻道", "輸出頻道", "設定輸出"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "summary_channel_id": {"type": ["integer", "null"], "minimum": 1},
+          "retain_audio": {"type": "boolean"}
+        }
+      }
+    },
+    "test_chat_capture": {
+      "description": "Capture the configured chat ROI once, run OCR, save a calibration image, and return recognized lines with confidence scores.",
+      "requires_dj": true,
+      "trigger_keywords": ["ocr校正", "測試ocr", "測試聊天室", "聊天室校正", "測試文字擷取"],
+      "parameters": {"type": "object", "properties": {}}
+    },
+    "start_session": {
+      "description": "Start a new game meeting/session recording using the saved audio and chat settings.",
+      "requires_dj": true,
+      "trigger_keywords": ["開始會議紀錄", "開始會議記錄", "開始紀錄", "開始記錄", "開始錄音", "開始會議"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string", "description": "Optional human-readable session name."}
+        }
+      }
+    },
+    "stop_session": {
+      "description": "Stop the active session, flush pending audio/OCR work, and return a summary-ready transcript plus the configured target Discord channel id.",
+      "requires_dj": true,
+      "trigger_keywords": ["停止會議紀錄", "停止會議記錄", "停止紀錄", "停止記錄", "停止錄音", "結束會議", "結束紀錄", "整理會議重點"],
+      "parameters": {"type": "object", "properties": {}}
+    },
+    "get_transcript": {
+      "description": "Read the active or most recent session transcript, optionally limiting the number of events returned.",
+      "requires_dj": true,
+      "trigger_keywords": ["逐字稿", "會議逐字稿", "查看紀錄", "查看記錄", "最近紀錄", "最近記錄"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": {"type": "integer", "minimum": 1, "maximum": 500}
+        }
+      }
+    }
+  }
+}

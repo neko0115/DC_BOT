@@ -71,6 +71,7 @@ def describe_gemini_error(error: Exception) -> str:
 class AssistantReply:
     text: str
     used_tools: bool
+    effects: tuple[dict[str, object], ...] = ()
 
 
 class GeminiAssistant:
@@ -100,11 +101,12 @@ class GeminiAssistant:
         await self.router.refresh_external_tools()
         request_text = self._request_text(prompt)
         tools = self._tools_for_request(prompt)
-        tools.extend(self.router.external_declarations_for(request_text))
+        tools.extend(self.router.external_declarations_for(request_text, context))
         tool_instruction = (
             "You may only request actions through the supplied tools. "
             "Use Google Search when a current recommendation, event, product, release, or other fresh web information would improve the answer. "
             "When web sources are available, include their URLs in a concise source list. "
+            "If a tool result contains summary_instruction, follow it using only the returned transcript/events and do not invent missing facts. "
             if tools
             else "Answer directly without claiming to browse the web or perform Discord actions. "
         )
@@ -133,11 +135,7 @@ class GeminiAssistant:
             request_options["tools"] = tools
         interaction = await self._create_interaction(
             client,
-            timeout_seconds=(
-                TOOL_REQUEST_TIMEOUT_SECONDS
-                if tools
-                else self._chat_timeout_seconds(request_text)
-            ),
+            timeout_seconds=TOOL_REQUEST_TIMEOUT_SECONDS if tools else self._chat_timeout_seconds(request_text),
             request_kind="tool" if tools else "chat",
             input_characters=len(prompt),
             **request_options,
@@ -146,18 +144,25 @@ class GeminiAssistant:
         if not calls:
             return AssistantReply(text=self._format_response(interaction, "我沒有產生回覆。"), used_tools=False)
 
-        results = []
+        results: list[dict[str, object]] = []
+        effects: list[dict[str, object]] = []
         for call in calls:
             try:
                 result = await self.router.execute(call.name, dict(call.arguments), context)
             except (TypeError, ValueError) as error:
                 result = {"message": f"無法執行操作：{error}"}
+            clean_result = dict(result)
+            raw_effects = clean_result.pop("_moxue_effects", None)
+            if isinstance(raw_effects, list):
+                for effect in raw_effects:
+                    if isinstance(effect, dict) and isinstance(effect.get("type"), str):
+                        effects.append(dict(effect))
             results.append(
                 {
                     "type": "function_result",
                     "name": call.name,
                     "call_id": call.id,
-                    "result": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
+                    "result": [{"type": "text", "text": json.dumps(clean_result, ensure_ascii=False)}],
                 }
             )
 
@@ -171,7 +176,11 @@ class GeminiAssistant:
             request_kind="tool-result",
             input_characters=sum(len(json.dumps(result, ensure_ascii=False)) for result in results),
         )
-        return AssistantReply(text=self._format_response(completed, "操作已完成。", interaction), used_tools=True)
+        return AssistantReply(
+            text=self._format_response(completed, "操作已完成。", interaction),
+            used_tools=True,
+            effects=tuple(effects),
+        )
 
     async def social_reply(self, prompt: str, *, persona_instruction: str) -> str:
         """Ask Gemini for conversational participation without exposing Discord tools."""
@@ -182,12 +191,7 @@ class GeminiAssistant:
         interaction = await self._create_interaction(
             client,
             model=self.model,
-            input=[
-                {
-                    "type": "text",
-                    "text": f"{persona_instruction}\n\n{prompt}",
-                }
-            ],
+            input=[{"type": "text", "text": f"{persona_instruction}\n\n{prompt}"}],
             timeout_seconds=CHAT_REQUEST_TIMEOUT_SECONDS,
             request_kind="social",
             input_characters=len(prompt),
@@ -221,7 +225,6 @@ class GeminiAssistant:
     def _get_client(self) -> Any:
         if self._client is None:
             from google import genai
-
             self._client = genai.Client(api_key=self.api_key)
         return self._client
 
@@ -242,11 +245,7 @@ class GeminiAssistant:
 
     @staticmethod
     def _chat_timeout_seconds(request_text: str) -> int:
-        return (
-            LONG_CHAT_REQUEST_TIMEOUT_SECONDS
-            if len(request_text) > LONG_CHAT_PROMPT_CHARACTER_THRESHOLD
-            else CHAT_REQUEST_TIMEOUT_SECONDS
-        )
+        return LONG_CHAT_REQUEST_TIMEOUT_SECONDS if len(request_text) > LONG_CHAT_PROMPT_CHARACTER_THRESHOLD else CHAT_REQUEST_TIMEOUT_SECONDS
 
     def _current_time_text(self) -> str:
         return datetime.now(self.timezone).strftime("%Y-%m-%d %H:%M %Z")

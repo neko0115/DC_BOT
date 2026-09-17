@@ -18,3 +18,20 @@ jobs:
         run: python -m pip install -U pip && python -m pip install -e .
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+  meeting-tool-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package with meeting capture dependencies
+        run: python -m pip install -U pip; python -m pip install -e ".[meeting]"
+      - name: Import meeting stack
+        run: python -c "import soundcard, onnxruntime; from rapidocr import RapidOCR; from discord_ai_assistant.capture_hub import CaptureHubServer; print('meeting + hub imports OK')"
+      - name: Import Capture Agent stack in isolated process
+        run: python -c "import tkinter, dxcam; from PIL import ImageTk; from discord_ai_assistant.capture_agent.server import CaptureAgentServer; from discord_ai_assistant.capture_agent.remote_client import CaptureAgentRemoteClient; print('capture agent + remote bridge imports OK')"
+      - name: Run meeting, Hub, and Capture Agent tests
+        run: python -m unittest tests.test_game_meeting_recorder tests.test_tool_effect_commands tests.test_capture_agent tests.test_capture_hub -v

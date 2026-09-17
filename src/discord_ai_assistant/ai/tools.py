@@ -87,10 +87,10 @@ class ToolRouter:
         except ToolGatewayUnavailable as error:
             LOGGER.warning("External tool gateway is unavailable: %s", error)
 
-    def external_declarations_for(self, prompt: str) -> list[dict[str, object]]:
+    def external_declarations_for(self, prompt: str, context: ToolContext) -> list[dict[str, object]]:
         if self.external_client is None:
             return []
-        return self.external_client.declarations_for(prompt)
+        return self.external_client.declarations_for(prompt, is_dj=context.is_dj)
 
     async def execute(self, name: str, arguments: dict[str, object], context: ToolContext) -> dict[str, object]:
         if name == "queue_library_track":
@@ -102,10 +102,34 @@ class ToolRouter:
             return {"message": f"YouTube 搜尋連結：https://www.youtube.com/results?search_query={quote_plus(query)}"}
         if self.external_client is not None and self.external_client.handles(name):
             try:
-                return await self.external_client.invoke(name, arguments, context.external_payload())
+                result = await self.external_client.invoke(name, arguments, context.external_payload())
+                return self._attach_external_effects(result)
+            except PermissionError:
+                return {"message": "此工具操作僅限 DJ 或管理員。"}
             except ToolGatewayUnavailable as error:
                 return {"message": f"外接工具目前無法使用：{error}"}
         return {"message": "此操作不在允許清單內。"}
+
+    @staticmethod
+    def _attach_external_effects(result: dict[str, object]) -> dict[str, object]:
+        """Translate opt-in external-tool result metadata into core-owned Discord effects."""
+        channel_id = result.get("summary_channel_id")
+        summary_instruction = result.get("summary_instruction")
+        if (
+            isinstance(channel_id, int)
+            and channel_id > 0
+            and isinstance(summary_instruction, str)
+            and summary_instruction.strip()
+        ):
+            result = dict(result)
+            result["_moxue_effects"] = [
+                {
+                    "type": "publish_final_reply",
+                    "channel_id": channel_id,
+                    "suppress_origin": True,
+                }
+            ]
+        return result
 
     async def _queue_library_track(
         self, arguments: dict[str, object], context: ToolContext

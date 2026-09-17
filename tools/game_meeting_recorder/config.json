@@ -1,0 +1,33 @@
+{
+  "audio": {
+    "enabled": true,
+    "loopback_device_id": null,
+    "sample_rate": 48000,
+    "chunk_seconds": 0.25,
+    "speech_threshold_dbfs": -38.0,
+    "silence_seconds": 1.2,
+    "pre_roll_seconds": 0.8,
+    "max_segment_seconds": 45.0,
+    "whisper_model": "small",
+    "whisper_language": "zh",
+    "whisper_beam_size": 5,
+    "whisper_initial_prompt": "以下是繁體中文遊戲狀況播報與團隊討論逐字稿。請保留專有名詞、數字、地名與任務名稱。"
+  },
+  "chat": {
+    "enabled": false,
+    "x": 0,
+    "y": 0,
+    "width": 640,
+    "height": 360,
+    "poll_seconds": 0.5,
+    "change_threshold": 0.018,
+    "ocr_min_confidence": 0.55,
+    "scale": 2.0,
+    "dedup_similarity": 0.9,
+    "dedup_window": 80
+  },
+  "output": {
+    "summary_channel_id": null,
+    "retain_audio": true
+  }
+}

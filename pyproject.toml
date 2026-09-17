@@ -12,8 +12,26 @@ dependencies = [
   "python-dotenv>=1.0,<2",
 ]
 
+[project.optional-dependencies]
+meeting = [
+  "SoundCard>=0.4,<1",
+  "rapidocr>=3.9,<4",
+  "onnxruntime>=1.20,<2",
+  "Pillow>=10,<13",
+  "dxcam>=0.3,<1; platform_system == 'Windows'",
+]
+capture-build = [
+  "pyinstaller>=6,<7",
+]
+tts-local = [
+  "kokoro>=0.9.4,<1",
+  "misaki[zh]>=0.9.4,<1",
+  "soundfile>=0.13,<1",
+]
+
 [project.scripts]
 discord-ai-assistant = "discord_ai_assistant.main:main"
+moxue-capture-agent = "discord_ai_assistant.capture_agent.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

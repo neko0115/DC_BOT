@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 import discord
@@ -9,11 +10,17 @@ from discord.ext import commands
 
 from discord_ai_assistant.ai.gemini import GeminiAssistant
 from discord_ai_assistant.ai.tools import ToolRouter
+from discord_ai_assistant.capture_agent.slash import install_capture_agent_commands
+from discord_ai_assistant.capture_hub import CaptureHubServer
 from discord_ai_assistant.commands import AssistantCommands
 from discord_ai_assistant.config import Settings, load_settings
+from discord_ai_assistant.lyrics_commands import LyricsCommands
+from discord_ai_assistant.music.enhanced_player import EnhancedMusicManager
 from discord_ai_assistant.music.library import LibraryService
-from discord_ai_assistant.music.player import MusicManager, configure_event_loop
+from discord_ai_assistant.music.player import configure_event_loop
+from discord_ai_assistant.slash_groups import GroupedSlashCommands, remove_grouped_legacy_commands
 from discord_ai_assistant.storage.database import Database
+from discord_ai_assistant.tool_effect_commands import ToolEffectAssistantCommands
 from discord_ai_assistant.tool_gateway.client import ToolGatewayClient
 from discord_ai_assistant.tool_gateway.server import ToolGatewayServer
 
@@ -28,7 +35,7 @@ class AssistantBot(commands.Bot):
         self.settings = settings
         self.database = Database(settings.database_path)
         self.library = LibraryService(settings.library_path, self.database, settings.max_upload_bytes)
-        self.music = MusicManager(
+        self.music = EnhancedMusicManager(
             settings.library_path,
             self.library.random_track,
             youtube_cookies_from_browser=settings.youtube_cookies_from_browser,
@@ -55,6 +62,17 @@ class AssistantBot(commands.Bot):
                     invocation_timeout_seconds=settings.tool_gateway_timeout_seconds,
                 )
 
+        capture_hub_enabled = os.getenv("CAPTURE_HUB_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+        self.capture_hub_server: CaptureHubServer | None = None
+        if capture_hub_enabled:
+            capture_hub_host = os.getenv("CAPTURE_HUB_HOST", "127.0.0.1").strip() or "127.0.0.1"
+            capture_hub_port = int(os.getenv("CAPTURE_HUB_PORT", "8878"))
+            self.capture_hub_server = CaptureHubServer(
+                settings.project_root,
+                host=capture_hub_host,
+                port=capture_hub_port,
+            )
+
         self.tool_router = ToolRouter(self.library, self.music, self.database, external_client)
         self.ai = GeminiAssistant(
             settings.gemini_api_key,
@@ -68,9 +86,19 @@ class AssistantBot(commands.Bot):
         if self.tool_gateway_server is not None:
             await self.tool_gateway_server.start()
             await self.tool_router.refresh_external_tools()
-        await self.add_cog(
-            AssistantCommands(self, self.settings, self.database, self.library, self.music, self.ai)
+        if self.capture_hub_server is not None:
+            await self.capture_hub_server.start()
+
+        core_commands = ToolEffectAssistantCommands(
+            self, self.settings, self.database, self.library, self.music, self.ai
         )
+        await self.add_cog(core_commands)
+        grouped_commands = GroupedSlashCommands(core_commands)
+        install_capture_agent_commands(grouped_commands, self.capture_hub_server)
+        await self.add_cog(grouped_commands)
+        await self.add_cog(LyricsCommands(self, self.music, self.database))
+        remove_grouped_legacy_commands(self.tree)
+
         if self.settings.discord_guild_id:
             guild = discord.Object(id=self.settings.discord_guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -87,6 +115,8 @@ class AssistantBot(commands.Bot):
             await commands_cog.announce_version_if_needed()
 
     async def close(self) -> None:
+        if self.capture_hub_server is not None:
+            await self.capture_hub_server.close()
         if self.tool_gateway_server is not None:
             await self.tool_gateway_server.close()
         self.database.close()

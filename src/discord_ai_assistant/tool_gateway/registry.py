@@ -25,6 +25,8 @@ class ToolAction:
     name: str
     description: str
     parameters: dict[str, object]
+    requires_dj: bool
+    trigger_keywords: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,8 @@ class RegisteredTool:
                     "function_name": function_name,
                     "description": action.description,
                     "parameters": action.parameters,
+                    "requires_dj": action.requires_dj,
+                    "trigger_keywords": list(action.trigger_keywords),
                 }
             )
         return {
@@ -130,8 +134,11 @@ class ToolRegistry:
         tool = self._tools.get(tool_name)
         if tool is None:
             raise KeyError(f"Unknown tool: {tool_name}")
-        if action_name not in {action.name for action in tool.manifest.actions}:
+        action = next((item for item in tool.manifest.actions if item.name == action_name), None)
+        if action is None:
             raise KeyError(f"Unknown action {action_name!r} for tool {tool_name!r}")
+        if action.requires_dj and context.get("is_dj") is not True:
+            raise PermissionError(f"Action {tool_name}/{action_name} requires DJ or administrator permission")
         result = tool.invoke(action_name, arguments, context)
         if inspect.isawaitable(result):
             result = await result
@@ -232,10 +239,22 @@ class ToolRegistry:
                 raise ToolLoadError(f"Action {action_name} must be an object")
             action_description = ToolRegistry._text(action_raw.get("description"), f"{action_name}.description")
             parameters = action_raw.get("parameters", {"type": "object", "properties": {}})
+            requires_dj = action_raw.get("requires_dj", False)
+            action_keywords_raw = action_raw.get("trigger_keywords")
             if not isinstance(parameters, dict) or parameters.get("type") != "object":
                 raise ToolLoadError(f"{action_name}.parameters must be a JSON object schema")
+            if not isinstance(requires_dj, bool):
+                raise ToolLoadError(f"{action_name}.requires_dj must be boolean")
+            if action_keywords_raw is None:
+                action_keywords = keywords
+            else:
+                if not isinstance(action_keywords_raw, list) or not all(
+                    isinstance(item, str) for item in action_keywords_raw
+                ):
+                    raise ToolLoadError(f"{action_name}.trigger_keywords must be a string array")
+                action_keywords = tuple(item.strip().lower() for item in action_keywords_raw if item.strip())
             external_function_name(name, action_name)
-            actions.append(ToolAction(action_name, action_description, parameters))
+            actions.append(ToolAction(action_name, action_description, parameters, requires_dj, action_keywords))
 
         return ToolManifest(
             name=name,

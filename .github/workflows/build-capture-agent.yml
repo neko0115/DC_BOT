@@ -1,0 +1,25 @@
+name: build-capture-agent
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install runtime and build dependencies
+        run: python -m pip install -U pip; python -m pip install -e ".[meeting,capture-build]"
+      - name: Build standalone Capture Agent
+        shell: powershell
+        run: .\scripts\build_capture_agent.ps1
+      - name: Upload MoxueCapture.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: MoxueCapture-windows-x64
+          path: dist\MoxueCapture.exe
+          if-no-files-found: error

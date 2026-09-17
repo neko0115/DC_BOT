@@ -128,6 +128,8 @@ class ToolGatewayServer:
             )
         except KeyError as error:
             raise web.HTTPNotFound(text=str(error)) from error
+        except PermissionError as error:
+            raise web.HTTPForbidden(text=str(error)) from error
         except asyncio.TimeoutError as error:
             raise web.HTTPGatewayTimeout(text="tool invocation timed out") from error
         except Exception as error:

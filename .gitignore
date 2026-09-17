@@ -17,6 +17,11 @@ env/
 # Runtime data
 data/
 
+# Packaged application output
+build/
+dist/
+*.spec
+
 # Library runtime content
 library/*
 !library/.gitkeep

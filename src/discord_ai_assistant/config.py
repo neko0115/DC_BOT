@@ -9,6 +9,13 @@ from dotenv import load_dotenv
 from discord_ai_assistant.time_utils import resolve_timezone
 
 
+DEFAULT_TTS_GEMINI_STYLE = (
+    "Speak in natural Taiwan Mandarin with a youthful, soft female voice. "
+    "Sound warm, relaxed, slightly playful, and conversational. "
+    "Use natural pauses and subtle emotional variation. Avoid announcer-like delivery."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     project_root: Path
@@ -35,6 +42,14 @@ class Settings:
     voice_recognition_silence_seconds: float
     voice_recognition_max_segment_seconds: float
     voice_recognition_initial_prompt: str
+    tts_provider: str
+    tts_gemini_model: str
+    tts_gemini_voice: str
+    tts_gemini_style: str
+    tts_gemini_timeout_seconds: float
+    tts_kokoro_enabled: bool
+    tts_kokoro_voice: str
+    tts_kokoro_speed: float
     youtube_cookies_from_browser: str | None
     youtube_cookies_file: Path | None
     youtube_po_token: str | None
@@ -91,6 +106,17 @@ def load_settings(project_root: Path) -> Settings:
         raise RuntimeError("VOICE_RECOGNITION_SILENCE_SECONDS must be between 0.5 and 10.")
     if not voice_recognition_silence_seconds < voice_recognition_max_segment_seconds <= 60:
         raise RuntimeError("VOICE_RECOGNITION_MAX_SEGMENT_SECONDS must be greater than silence and at most 60.")
+
+    tts_provider = os.getenv("TTS_PROVIDER", "auto").strip().lower() or "auto"
+    if tts_provider not in {"auto", "gemini", "kokoro", "sapi"}:
+        raise RuntimeError("TTS_PROVIDER must be one of: auto, gemini, kokoro, sapi")
+    tts_gemini_timeout_seconds = float(os.getenv("TTS_GEMINI_TIMEOUT_SECONDS", "45"))
+    if not 5 <= tts_gemini_timeout_seconds <= 120:
+        raise RuntimeError("TTS_GEMINI_TIMEOUT_SECONDS must be between 5 and 120.")
+    tts_kokoro_speed = float(os.getenv("TTS_KOKORO_SPEED", "1.0"))
+    if not 0.5 <= tts_kokoro_speed <= 2.0:
+        raise RuntimeError("TTS_KOKORO_SPEED must be between 0.5 and 2.0.")
+
     persona_timezone = os.getenv("PERSONA_TIMEZONE", "Asia/Taipei").strip() or "Asia/Taipei"
     try:
         resolve_timezone(persona_timezone)
@@ -147,6 +173,18 @@ def load_settings(project_root: Path) -> Settings:
         voice_recognition_initial_prompt=(
             os.getenv("VOICE_RECOGNITION_INITIAL_PROMPT", "以下是繁體中文 Discord 語音聊天的逐字稿。").strip()
         ),
+        tts_provider=tts_provider,
+        tts_gemini_model=(
+            os.getenv("TTS_GEMINI_MODEL", "gemini-3.1-flash-tts-preview").strip()
+            or "gemini-3.1-flash-tts-preview"
+        ),
+        tts_gemini_voice=os.getenv("TTS_GEMINI_VOICE", "Leda").strip() or "Leda",
+        tts_gemini_style=os.getenv("TTS_GEMINI_STYLE", DEFAULT_TTS_GEMINI_STYLE).strip(),
+        tts_gemini_timeout_seconds=tts_gemini_timeout_seconds,
+        tts_kokoro_enabled=os.getenv("TTS_KOKORO_ENABLED", "true").strip().lower()
+        in {"1", "true", "yes", "on"},
+        tts_kokoro_voice=os.getenv("TTS_KOKORO_VOICE", "zf_xiaoni").strip() or "zf_xiaoni",
+        tts_kokoro_speed=tts_kokoro_speed,
         youtube_cookies_from_browser=youtube_cookies_from_browser,
         youtube_cookies_file=youtube_cookies_file,
         youtube_po_token=os.getenv("YOUTUBE_PO_TOKEN", "").strip() or None,
