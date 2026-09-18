@@ -80,6 +80,31 @@ class MeetingFeedbackParsingTests(unittest.TestCase):
 
 
 class MeetingFeedbackStoreTests(unittest.TestCase):
+    def test_selection_is_revision_scoped_immutable_and_uses_existing_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            database = Database(root / "assistant.sqlite3")
+            self.addCleanup(database.close)
+            store = MeetingFeedbackStore(database, root)
+            revisions = [store.create_revision(
+                review_id=f"review-{guild_id}", guild_id=guild_id, profile_key=None,
+                audio_sha256="audio", title="週會", correction_text="修訂",
+                original_report="草稿", created_by=99,
+            ) for guild_id in (10, 11)]
+            candidate = FeedbackCandidate("report_preference", "", "", "保留時間碼")
+            selected, unselected = store.add_candidates(revisions[0], [candidate, candidate])
+            foreign = store.add_candidates(revisions[1], [candidate])[0]
+            schema = database.connection.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+
+            store.select_candidates(revisions[0], [selected, selected, foreign, -1])
+            store.select_candidates(revisions[0], [unselected])
+
+            self.assertEqual([i for i, _ in store.candidates(revisions[0], "approved")], [selected])
+            self.assertEqual([i for i, _ in store.candidates(revisions[0], "skipped")], [unselected])
+            self.assertEqual([i for i, _ in store.candidates(revisions[1], "pending")], [foreign])
+            self.assertEqual(database.connection.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall(), schema)
+            database.close()
+
     def test_reviewed_asr_mapping_creates_timestamped_training_examples_and_export(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

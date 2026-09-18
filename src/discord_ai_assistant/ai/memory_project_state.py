@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from discord_ai_assistant.ai.memory_phase2 import PassiveMemoryV2Draft
+from discord_ai_assistant.ai.memory_retention import RETENTION_LONG
 from discord_ai_assistant.ai.memory_v2 import MEMORY_KIND_EPISODIC, MEMORY_KIND_PROJECT, normalize_memory_text
 
 PROJECT_MUTABLE_ROLES = {"status", "next_step", "blocker"}
@@ -113,6 +114,9 @@ def store_structured_project_memory(
             project=project,
             confidence=draft.confidence,
             memory_key=memory_key,
+            domain="project",
+            subdomain=project,
+            retention=RETENTION_LONG,
         )
         if created:
             _publish_created(database, guild_id, user_id, memory, "passive")
@@ -215,6 +219,9 @@ def refresh_project_summary(database: Any, guild_id: int, user_id: int, project:
         project=project,
         confidence=1.0,
         memory_key=project_summary_key(project),
+        domain="project",
+        subdomain=project,
+        retention=RETENTION_LONG,
     )
     return memory
 

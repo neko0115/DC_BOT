@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from discord_ai_assistant.commands import (
+    AssistantCommands,
     is_sensitive_memory,
     parse_track_ids,
     voice_chat_announcement,
@@ -54,6 +56,19 @@ class CommandHelperTests(unittest.TestCase):
     def test_sensitive_memories_are_rejected(self) -> None:
         self.assertTrue(is_sensitive_memory("我的 API Key 是 abc"))
         self.assertFalse(is_sensitive_memory("我偏好搖滾樂"))
+
+    def test_assistant_commands_no_longer_owns_legacy_passive_pipeline(self) -> None:
+        source = inspect.getsource(AssistantCommands)
+        for retired in (
+            "_pending_passive_memories",
+            "_last_passive_memory_extraction",
+            "_passive_memory_lock",
+            "_collect_passive_memory",
+            "_passive_memory_flush",
+        ):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, source)
+        self.assertIn("self.memory_session = ConversationSessionState()", source)
 
     def test_explicit_chat_memory_is_stored_without_calling_gemini(self) -> None:
         class Member:

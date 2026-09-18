@@ -120,7 +120,9 @@ Capture Agent 類指令支援本機與遠端裝置：
 /persona dnd_clear
 ```
 
-## /memory — 使用者記憶
+## /memory — Memory V2
+
+### 個人記憶
 
 ```text
 /memory add
@@ -130,6 +132,69 @@ Capture Agent 類指令支援本機與遠端裝置：
 /memory passive
 ```
 
+- `add/list/delete/clear`：管理自己的個人記憶。
+- `passive`：開啟或關閉自己的被動 Memory V2 整理。這個設定只控制被動學習；明確要求「記住」的手動路徑仍獨立存在。
+
+### 個人 Memory V2 檢查
+
+```text
+/memory search <query>
+/memory projects
+/memory project <name>
+/memory provenance <memory_id>
+/memory conflicts
+```
+
+- `search`：用目前 Memory V2 的 query-aware ranking 模擬召回結果，顯示 score、kind、project/subject 與內容。
+- `projects`：列出自己的 active project scopes。
+- `project`：查看指定專案的目前狀態、blocker、next step 與近期歷史摘要。
+- `provenance`：查看自己的被動記憶由哪些 Discord message/channel/batch/session 產生；不會顯示另一位使用者的私人來源。
+- `conflicts`：查看目前保留、尚未自動覆寫的潛在 project fact 衝突。
+
+以上個人檢查指令皆為 ephemeral，且維持 guild + user scope。
+
+### 頻道 Memory V2 模式（DJ／管理員）
+
+```text
+/memory channel <mode>
+```
+
+可用 mode：
+
+```text
+auto
+mixed
+social
+game
+game:<subdomain>
+project
+off
+```
+
+- `auto`：依頻道名稱／分類與訊息明確證據判斷。
+- `mixed`：允許同一頻道同時維持多個聊天主題，不固定單一 domain。
+- `social`：偏向一般社交／日常內容。
+- `game`：遊戲頻道，但不固定某一款遊戲。
+- `game:<subdomain>`：提供特定遊戲 prior；訊息中的強明確證據仍可覆蓋 prior。
+- `project`：專案型被動記憶；不建立 guild-shared 社交 episode。
+- `off`：停用目前頻道的被動個人／shared 記憶形成。
+
+目前已知 game subdomain 由 Memory V2 domain registry 提供，例如 `genshin`、`star_rail`、`zzz`、`lifeafter`、`counter_strike`、`arena_of_valor`、`minecraft` 等。輸入未知 subdomain 時指令會回覆可用清單。
+
+### Guild-shared memory
+
+```text
+/memory shared_search <query>
+/memory shared_forget <memory_id>
+```
+
+- `shared_search`：搜尋目前伺服器的 active 公開 shared memory，例如群體事件、遊戲 episode 或群內梗。
+- `shared_forget`：DJ／管理員刪除目前 guild 的一項 shared memory；不能跨 guild 刪除。
+
+Shared memory 與個人 `user_memories` 分開儲存。第三方八卦、敏感個資與不符合公開分享政策的內容不應被自動提升為 shared memory。
+
 ## 相容性
 
-舊功能的 Python callback 暫時保留在 `AssistantCommands` 內，讓新群組可以重用同一套權限與邏輯；但已搬移的舊頂層 Slash Command 會在 Discord Command Tree 同步前移除，因此不會繼續出現在 `/` 自動完成清單。
+已搬移的舊頂層 Slash Command 會在 Discord Command Tree 同步前移除，因此不會繼續出現在 `/` 自動完成清單。
+
+Memory V2 social rebalance 已退休 `AssistantCommands` 內舊的被動記憶 queue/flush；production 被動學習由單一 `MemoryV2PassiveRuntime` 負責。這不影響 `/memory add` 或聊天中明確要求墨雪記住內容的手動記憶路徑。

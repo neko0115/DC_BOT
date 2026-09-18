@@ -156,8 +156,11 @@ class AssistantBot(commands.Bot):
             )
             self.database.set_state("tts_worker_mode", "auto")
         core_commands.speech = self.speech_router
+        core_commands.social.session_state = core_commands.memory_session
         await self.add_cog(core_commands)
-        await self.add_cog(MemoryV2PassiveRuntime(self, self.database, self.ai))
+        await self.add_cog(
+            MemoryV2PassiveRuntime(self, self.database, self.ai, core_commands.memory_session)
+        )
         await self.add_cog(KnowledgeHelpRuntime(self, core_commands.social))
         await self.add_cog(AgentEventBridge(self, self.settings, self.agent_bus, self.database))
         await self.add_cog(TTSWorkerCommands(self.settings, self.database, self.speech_router))

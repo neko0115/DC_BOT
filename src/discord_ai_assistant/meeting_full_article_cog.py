@@ -124,25 +124,69 @@ class ResilientMeetingFeedbackDecisionView(discord.ui.View):
         self.report_path = report_path
         self.title = title
         self.correction_text = correction_text
-        self.candidate_ids = candidate_ids
+        self.candidate_ids = candidate_ids[:12]
+        self.selected_candidate_ids: set[int] = set()
+        self._learning_decision: bool | None = None
         self._lock = asyncio.Lock()
         self._handled = False
+        if self.candidate_ids:
+            store = getattr(cog, "feedback_store", None)
+            candidates = dict(store.candidates(revision_id)) if store is not None else {}
+            options = []
+            for index, item_id in enumerate(self.candidate_ids, start=1):
+                candidate = candidates.get(item_id)
+                label = _candidate_label(candidate) if candidate is not None else f"候選 #{item_id}"
+                options.append(discord.SelectOption(label=f"{index}. {label}"[:100], value=str(item_id)))
+            selector = discord.ui.Select(
+                placeholder="選擇允許學習的項目（可複選）",
+                min_values=0,
+                max_values=len(self.candidate_ids),
+                custom_id="meeting_feedback_candidates",
+                row=1,
+                options=options,
+            )
+            selector.callback = self._select_candidates
+            self.add_item(selector)
         self._restore_retry_state()
 
     def _disable(self) -> None:
         self._handled = True
         for item in self.children:
-            if isinstance(item, discord.ui.Button):
+            if isinstance(item, (discord.ui.Button, discord.ui.Select)):
                 item.disabled = True
 
     def _restore_retry_state(self) -> None:
         self._handled = False
         for item in self.children:
+            if isinstance(item, discord.ui.Select):
+                item.disabled = self._learning_decision is not None
+                for option in item.options:
+                    option.default = int(option.value) in self.selected_candidate_ids
             if not isinstance(item, discord.ui.Button):
                 continue
             item.disabled = bool(
-                item.custom_id == "meeting_feedback_apply" and not self.candidate_ids
+                (
+                    item.custom_id == "meeting_feedback_apply"
+                    and (not self.selected_candidate_ids or self._learning_decision is False)
+                )
+                or (item.custom_id == "meeting_feedback_regenerate_only" and self._learning_decision is True)
             )
+
+    async def _select_candidates(self, interaction: discord.Interaction) -> None:
+        if not await self._guard(interaction):
+            return
+        async with self._lock:
+            if not await self._guard(interaction):
+                return
+            if self._learning_decision is not None:
+                await interaction.response.send_message("學習選擇已保存，重試會沿用原選擇。", ephemeral=True)
+                return
+            selector = next(item for item in self.children if isinstance(item, discord.ui.Select))
+            self.selected_candidate_ids = {
+                item_id for item_id in self.candidate_ids if str(item_id) in selector.values
+            }
+            self._restore_retry_state()
+            await interaction.response.edit_message(view=self)
 
     async def _guard(self, interaction: discord.Interaction) -> bool:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
@@ -168,6 +212,15 @@ class ResilientMeetingFeedbackDecisionView(discord.ui.View):
         if not await self._guard(interaction):
             return
         async with self._lock:
+            if not await self._guard(interaction):
+                return
+            if learn and not self.selected_candidate_ids:
+                await interaction.response.send_message("請先選擇至少一個允許學習的項目。", ephemeral=True)
+                return
+            if self._learning_decision is not None and learn != self._learning_decision:
+                await interaction.response.send_message("重試必須沿用已保存的學習選擇。", ephemeral=True)
+                return
+            self._learning_decision = learn
             self._disable()
             await interaction.response.defer(thinking=True, ephemeral=True)
             await self._sync_view(interaction)
@@ -180,6 +233,7 @@ class ResilientMeetingFeedbackDecisionView(discord.ui.View):
                     title=self.title,
                     correction_text=self.correction_text,
                     learn=learn,
+                    selected_candidate_ids=sorted(self.selected_candidate_ids) if learn else [],
                 )
             except Exception as error:
                 LOGGER.exception(
@@ -209,7 +263,7 @@ class ResilientMeetingFeedbackDecisionView(discord.ui.View):
             await self._sync_view(interaction)
 
     @discord.ui.button(
-        label="套用學習並重整",
+        label="套用已選項目並重整",
         style=discord.ButtonStyle.success,
         emoji="🧠",
         custom_id="meeting_feedback_apply",
@@ -245,8 +299,15 @@ class ResilientMeetingFeedbackDecisionView(discord.ui.View):
         self._disable()
         if self.cog.feedback_store is not None:
             self.cog.feedback_store.update_revision(self.revision_id, status="cancelled")
-            self.cog.feedback_store.set_candidate_status(self.candidate_ids, "cancelled")
-        await interaction.response.edit_message(content="已取消這次修正，原草稿保持不變。", view=self)
+            unresolved = [
+                item_id
+                for status in ("pending", "approved")
+                for item_id, _ in self.cog.feedback_store.candidates(self.revision_id, status=status)
+            ]
+            self.cog.feedback_store.set_candidate_status(unresolved, "cancelled")
+        await interaction.response.edit_message(
+            content="已取消這次重整，原草稿保持不變；若先前已完成學習，已套用項目仍會保留。", view=self,
+        )
 
 
 # The base feedback cog creates MeetingReportReviewView from its own module globals
@@ -481,7 +542,8 @@ class MeetingReportCommands(FeedbackMeetingReportCommands):
             content = (
                 "我已經從你的**整篇修正版**找出以下可重用學習候選；目前仍然**沒有**寫進 Knowledge DB：\n"
                 f"{candidate_text[:1500]}\n\n"
-                "如果候選看起來正確，選「套用學習並重整」；如果這次只想照你的全文重新整理，選「只重整，不學習」。"
+                "請在下方逐項選擇允許學習的候選，再按「套用已選項目並重整」；未選項目不會學習。"
+                "如果這次只想照你的全文重新整理，選「只重整，不學習」。"
             )
         else:
             content = (
@@ -558,14 +620,17 @@ class MeetingReportCommands(FeedbackMeetingReportCommands):
             payload = {key: row[key] for key in row.keys()}
             revision_id = int(payload["id"])
             status = str(payload.get("status") or "")
+            if status == "cancelled":
+                continue
             if status == "generation_failed_after_learning":
                 return payload, True
             if status == "generation_failed_without_learning":
                 return payload, False
             applied = self.feedback_store.candidates(revision_id, status="applied")
+            approved = self.feedback_store.candidates(revision_id, status="approved")
             skipped = self.feedback_store.candidates(revision_id, status="skipped")
             pending = self.feedback_store.candidates(revision_id, status="pending")
-            if applied:
+            if applied or approved:
                 return payload, True
             if skipped and not pending:
                 return payload, False

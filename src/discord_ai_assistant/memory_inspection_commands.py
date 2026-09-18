@@ -5,11 +5,16 @@ from typing import Any
 import discord
 from discord import app_commands
 
+from discord_ai_assistant.ai.memory_domain_registry import GAME_SUBDOMAINS
 from discord_ai_assistant.ai.memory_phase4 import (
     list_open_memory_conflicts,
     memory_provenance_rows,
 )
 from discord_ai_assistant.ai.memory_project_state import list_user_projects, project_snapshot_text
+from discord_ai_assistant.ai.memory_shared import delete_guild_memory, search_guild_memories
+
+
+_CHANNEL_MEMORY_MODES = {"auto", "mixed", "social", "game", "project", "off"}
 
 
 def _ephemeral_send(interaction: discord.Interaction, text: str) -> Any:
@@ -18,8 +23,26 @@ def _ephemeral_send(interaction: discord.Interaction, text: str) -> Any:
     return interaction.response.send_message(text[:2000], ephemeral=True)
 
 
+def normalize_memory_channel_mode(value: str) -> str | None:
+    """Validate a per-channel passive-memory policy override."""
+
+    normalized = " ".join(value.split()).casefold()
+    if normalized in _CHANNEL_MEMORY_MODES:
+        return normalized
+    if normalized.startswith("game:"):
+        subdomain = normalized.split(":", 1)[1].strip()
+        if subdomain in GAME_SUBDOMAINS:
+            return f"game:{subdomain}"
+    return None
+
+
+def _is_memory_admin(core: Any, interaction: discord.Interaction) -> bool:
+    checker = getattr(core, "_is_dj", None)
+    return bool(callable(checker) and checker(interaction))
+
+
 def install_memory_inspection_commands(grouped_commands: Any) -> None:
-    """Attach Memory V2 inspection commands to the existing `/memory` group."""
+    """Attach Memory V2 inspection/admin commands to the existing `/memory` group."""
 
     group = grouped_commands.memory
     core = grouped_commands.core
@@ -111,8 +134,9 @@ def install_memory_inspection_commands(grouped_commands: Any) -> None:
             lines = [f"**Memory V2 provenance：`{memory_id}`**"]
             for row in rows:
                 observed = row["observed_at"] or row["created_at"]
+                session = f" | session=`{row['session_key']}`" if row["session_key"] else ""
                 lines.append(
-                    f"- <#{row['channel_id']}> message=`{row['message_id']}` | {observed} | batch=`{row['batch_id']}`"
+                    f"- <#{row['channel_id']}> message=`{row['message_id']}` | {observed} | batch=`{row['batch_id']}`{session}"
                 )
             await _ephemeral_send(interaction, "\n".join(lines))
 
@@ -144,3 +168,79 @@ def install_memory_inspection_commands(grouped_commands: Any) -> None:
             await _ephemeral_send(interaction, "\n".join(lines))
 
         group.add_command(memory_conflicts)
+
+    if group.get_command("channel") is None:
+        @app_commands.command(name="channel", description="設定目前頻道的 Memory V2 被動學習模式（DJ/管理員）")
+        @app_commands.describe(mode="auto/mixed/social/game/game:<game>/project/off")
+        async def memory_channel(interaction: discord.Interaction, mode: str) -> None:
+            if not interaction.guild or interaction.channel_id is None:
+                await _ephemeral_send(interaction, "這個指令只能在伺服器頻道內使用。")
+                return
+            if not _is_memory_admin(core, interaction):
+                await _ephemeral_send(interaction, "只有 DJ 或管理員可以調整頻道記憶模式。")
+                return
+            normalized = normalize_memory_channel_mode(mode)
+            if normalized is None:
+                examples = ", ".join(sorted(GAME_SUBDOMAINS))
+                await _ephemeral_send(
+                    interaction,
+                    "不支援這個模式。可用：`auto`、`mixed`、`social`、`game`、"
+                    f"`game:<subdomain>`、`project`、`off`。已知 game subdomain：{examples}",
+                )
+                return
+            core.database.set_state(
+                f"memory_channel_mode:{interaction.guild.id}:{interaction.channel_id}",
+                normalized,
+            )
+            await _ephemeral_send(
+                interaction,
+                f"目前頻道的 Memory V2 模式已設為 `{normalized}`。",
+            )
+
+        group.add_command(memory_channel)
+
+    if group.get_command("shared_search") is None:
+        @app_commands.command(name="shared_search", description="搜尋此伺服器已啟用的公開 shared memory")
+        @app_commands.describe(query="群體事件、遊戲或梗的關鍵字")
+        async def memory_shared_search(interaction: discord.Interaction, query: str) -> None:
+            if not interaction.guild:
+                await _ephemeral_send(interaction, "這個指令只能在伺服器內使用。")
+                return
+            matches = search_guild_memories(
+                core.database,
+                interaction.guild.id,
+                query,
+                limit=10,
+            )
+            if not matches:
+                await _ephemeral_send(interaction, "沒有找到 active shared memory。")
+                return
+            lines = [f"**Shared Memory 搜尋：{query[:80]}**"]
+            for index, match in enumerate(matches, start=1):
+                scope = match.domain + (f"/{match.subdomain}" if match.subdomain else "")
+                lines.append(
+                    f"{index}. `{match.id}` score={match.score:.3f} | {scope} | {match.kind} | "
+                    f"retention={match.retention} reinforce={match.reinforcement_count}\n"
+                    f"   {match.content}"
+                )
+            await _ephemeral_send(interaction, "\n".join(lines))
+
+        group.add_command(memory_shared_search)
+
+    if group.get_command("shared_forget") is None:
+        @app_commands.command(name="shared_forget", description="刪除此伺服器的一項 shared memory（DJ/管理員）")
+        @app_commands.describe(memory_id="使用 /memory shared_search 顯示的 shared memory 編號")
+        async def memory_shared_forget(interaction: discord.Interaction, memory_id: int) -> None:
+            if not interaction.guild:
+                await _ephemeral_send(interaction, "這個指令只能在伺服器內使用。")
+                return
+            if not _is_memory_admin(core, interaction):
+                await _ephemeral_send(interaction, "只有 DJ 或管理員可以刪除 shared memory。")
+                return
+            deleted = delete_guild_memory(core.database, interaction.guild.id, memory_id)
+            await _ephemeral_send(
+                interaction,
+                "已刪除這項 shared memory。" if deleted else "找不到這項 shared memory，或它不屬於此伺服器。",
+            )
+
+        group.add_command(memory_shared_forget)

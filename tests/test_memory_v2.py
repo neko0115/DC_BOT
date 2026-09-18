@@ -46,6 +46,25 @@ class MemoryV2DatabaseTests(unittest.TestCase):
         self.database.close()
         self.tempdir.cleanup()
 
+    def test_fresh_database_includes_social_memory_columns(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self.database.connection.execute("PRAGMA table_info(user_memories)").fetchall()
+        }
+        self.assertTrue(
+            {
+                "domain",
+                "subdomain",
+                "entity_type",
+                "entity",
+                "retention",
+                "expires_at",
+                "reinforcement_count",
+                "last_reinforced",
+                "socially_referenceable",
+            }.issubset(columns)
+        )
+
     def test_query_aware_search_prefers_old_relevant_memory_over_recent_noise(self) -> None:
         relevant = self.database.add_user_memory(1, 2, "專案", "我目前在做 YuuPo MVA 分析")
         for index in range(30):
@@ -132,6 +151,7 @@ class MemoryV2DatabaseTests(unittest.TestCase):
         legacy_path = Path(self.tempdir.name) / "legacy.sqlite3"
         legacy = Database(legacy_path)
         memory = legacy.add_user_memory(1, 2, "專案", "我目前在做 YuuPo MVA 分析")
+        ambiguous = legacy.add_user_memory(1, 2, "提醒", "一般備忘內容")
         legacy.close()
 
         migrated = AgentDatabase(legacy_path)
@@ -150,16 +170,35 @@ class MemoryV2DatabaseTests(unittest.TestCase):
                     "status",
                     "superseded_by",
                     "last_confirmed",
+                    "domain",
+                    "subdomain",
+                    "entity_type",
+                    "entity",
+                    "retention",
+                    "expires_at",
+                    "reinforcement_count",
+                    "last_reinforced",
+                    "socially_referenceable",
                 }.issubset(columns)
             )
             row = migrated.connection.execute(
-                "SELECT memory_kind, project, status, last_confirmed FROM user_memories WHERE id = ?",
+                "SELECT memory_kind, project, status, last_confirmed, domain, subdomain "
+                "FROM user_memories WHERE id = ?",
                 (memory.id,),
             ).fetchone()
             self.assertEqual(row["memory_kind"], MEMORY_KIND_PROJECT)
             self.assertEqual(row["project"], "YuuPo")
             self.assertEqual(row["status"], "active")
             self.assertIsNotNone(row["last_confirmed"])
+            self.assertEqual(row["domain"], "project")
+            self.assertEqual(row["subdomain"], "YuuPo")
+
+            ambiguous_row = migrated.connection.execute(
+                "SELECT domain, subdomain FROM user_memories WHERE id = ?",
+                (ambiguous.id,),
+            ).fetchone()
+            self.assertIsNone(ambiguous_row["domain"])
+            self.assertIsNone(ambiguous_row["subdomain"])
         finally:
             migrated.close()
 

@@ -154,6 +154,7 @@ class MeetingFeedbackDecisionView(discord.ui.View):
                 title=self.title,
                 correction_text=self.correction_text,
                 learn=True,
+                selected_candidate_ids=self.candidate_ids,
             )
 
     @discord.ui.button(label="只重整，不學習", style=discord.ButtonStyle.primary, emoji="🔄")
@@ -739,11 +740,17 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
         title: str,
         correction_text: str,
         learn: bool,
+        selected_candidate_ids: list[int] | None = None,
     ) -> None:
         assert interaction.guild is not None and isinstance(interaction.user, discord.Member)
         if self.feedback_store is None:
             await interaction.followup.send("Feedback database 無法使用。", ephemeral=True)
             return
+        # None is a retry: only previously approved candidates may be learned.
+        if selected_candidate_ids is not None or not learn:
+            self.feedback_store.select_candidates(
+                revision_id, selected_candidate_ids if learn and selected_candidate_ids else [],
+            )
         review = self._read_review(review_path)
         profile_key = str(review.get("knowledge_profile")) if review.get("knowledge_profile") else None
         audio_sha = str(review.get("audio_sha256") or review_path.parent.name)
@@ -757,7 +764,7 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
             await interaction.followup.send("原逐字稿格式無效。", ephemeral=True)
             return
 
-        pending = self.feedback_store.candidates(revision_id, status="pending")
+        approved = self.feedback_store.candidates(revision_id, status="approved")
         snapshot = self._snapshot_for_profile(interaction.guild.id, profile_key)
         learned_examples = 0
         if learn:
@@ -766,7 +773,7 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
                 profile_key=profile_key,
                 revision_id=revision_id,
                 created_by=interaction.user.id,
-                candidates=pending,
+                candidates=approved,
             )
             learned_examples = self.feedback_store.record_asr_examples(
                 revision_id=revision_id,
@@ -774,12 +781,9 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
                 profile_key=profile_key,
                 audio_sha256=audio_sha,
                 segments=[item for item in list(payload.get("segments", [])) if isinstance(item, dict)],
-                candidates=[item for _, item in pending],
+                candidates=[item for _, item in approved],
                 created_by=interaction.user.id,
             )
-        else:
-            self.feedback_store.set_candidate_status([item_id for item_id, _ in pending], "skipped")
-
         reviewed = self._reviewed_transcript(payload, snapshot if learn else None)
         title_token = _MEETING_TITLE.set(title)
         knowledge_token = _MEETING_KNOWLEDGE.set(snapshot)

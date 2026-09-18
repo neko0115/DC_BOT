@@ -1,237 +1,259 @@
 # Moxue Memory V2
 
-Memory V2 changes Moxue from a recent-memory prompt injector into a bounded, query-aware memory system while preserving the existing SQLite database and user/guild isolation.
+Memory V2 is Moxue's bounded, query-aware long-term memory system. The social rebalance keeps the existing deterministic SQLite/FTS/project foundation, but changes passive learning from project-first behavior into a social/game-first Discord memory model.
 
-## Phase 1 goals
+The production goals are:
 
-1. A relevant old memory should beat recent unrelated memories.
-2. Mutable facts should not leave two contradictory active values.
-3. Project and episodic memories should remain distinguishable from preferences/habits.
-4. Existing databases must migrate in place without deleting legacy memories.
-5. Retrieval must remain bounded, inspectable, and safe when SQLite FTS5 is unavailable.
+1. remember durable personal facts, preferences, game context, shared episodes, and project state without turning ordinary chat into a database dump;
+2. keep mixed Discord channels multi-topic instead of assigning the whole channel to one game/domain;
+3. use one passive extraction pipeline only;
+4. distinguish private per-user memory from public guild-shared memory;
+5. expire short/medium-lived social memories while preserving durable facts and project decisions;
+6. let `SocialParticipant` use relevant memory naturally without allowing memory itself to become a reason to reply;
+7. enforce privacy and cross-user referenceability before prompt construction;
+8. keep deterministic lexical/FTS retrieval available without requiring embeddings.
 
 ## Storage model
 
-The existing `user_memories` table is retained. `AgentDatabase` adds the following columns when missing:
+### Personal memory
 
-- `importance`: 1..3 priority signal.
-- `last_used` / `use_count`: retrieval-use metadata.
-- `source`: `manual`, `passive`, or derived memory source.
-- `memory_kind`: semantic, preference, habit, interest, project, or episodic.
-- `subject`: optional mutable-profile subject such as `筆電顯卡`.
-- `project`: optional project scope such as `YuuPo`.
-- `memory_key`: conservative mutable slot identifier.
-- `confidence`: 0..1 evidence confidence.
-- `status`: `active` or `superseded`.
-- `superseded_by`: newer memory that replaced this row.
-- `last_confirmed`: last time the same fact was confirmed.
+Personal memory remains in the existing `user_memories` table and is scoped by:
 
-Legacy rows are preserved. Missing metadata is inferred conservatively at startup.
+```text
+guild_id + user_id
+```
 
-## Consolidation policy
+Schema migration is additive and idempotent. Existing databases are upgraded in place; `user_memories` is not rebuilt or dropped.
 
-Memory V2 does **not** deduplicate by semantic guess alone.
+In addition to the original Memory V2 metadata (`importance`, `source`, `memory_kind`, `subject`, `project`, `memory_key`, `confidence`, `status`, `superseded_by`, `last_confirmed`, usage metadata), social memory adds:
 
-A row can automatically supersede an older active row only when both map to the same conservative mutable slot, for example:
+- `domain` / `subdomain` — e.g. `game/genshin`, `daily/food`, `project/YuuPo`;
+- `entity_type` / `entity` — optional structured subject;
+- `retention` — `short`, `medium`, `long`, or shared policy where applicable;
+- `expires_at` — nullable UTC expiry timestamp;
+- `reinforcement_count` / `last_reinforced` — repeated-evidence metadata;
+- `socially_referenceable` — conservative flag controlling whether a personal memory may be surfaced outside its owner in social context.
 
-- custom category `筆電顯卡`: `RTX 3050` -> `RTX 5070`;
-- explicit fact `我的筆電顯卡是 RTX 3050` -> `我的筆電顯卡是 RTX 5070`.
+Legacy project rows with an existing project name are conservatively backfilled as `domain=project`; ambiguous old free-form rows are not guessed into new social/game domains.
 
-Free-form project notes and episodic events do not overwrite one another merely because they mention the same project.
+### Guild-shared memory
 
-An exact duplicate confirms the existing row (`last_confirmed`) rather than creating another copy.
+Public group knowledge is stored separately in `guild_memories`. It is guild-scoped rather than user-owned and is intended for genuinely shared, non-sensitive events such as a recurring group joke or a public game-session episode.
+
+Shared memory formation requires conservative eligibility plus supporting observation/evidence. A model-produced `shared_candidate=true` is not sufficient on its own. Project channels do not promote project content into shared social episodes.
+
+Raw Discord message text is not duplicated into provenance/evidence tables.
+
+## Retention and expiry
+
+Personal retention baselines are:
+
+```text
+short  = 14 days
+medium = 90 days
+long   = no automatic expiry
+```
+
+Due memories are marked `expired`; they are not physically deleted by a background cleanup job. Retrieval/list operations exclude expired rows.
+
+Shared episodes begin with a bounded lifetime and become more durable only through effective reinforcement. The first-version policy is:
+
+```text
+new shared episode       -> 30 days
+1 effective reinforcement -> refresh to 30 days
+2 effective reinforcements -> 90 days
+3+ effective reinforcements -> long-term
+```
+
+This lets recurring group lore survive while one-off chat fades naturally.
 
 ## Query-aware retrieval
 
-Production command paths pass the **current user request** to `AgentDatabase.user_memory_context(...)`.
+Personal explicit-AI paths continue to pass the current request into `AgentDatabase.user_memory_context(...)`.
 
-Candidate scoring is deterministic and bounded. It combines:
+Retrieval remains deterministic and bounded. Ranking combines lexical relevance, subject/project/domain/entity signals, importance, recency, prior useful retrievals, source preference, and optional FTS5 ranking.
 
-- mixed CJK/Latin lexical relevance (primary signal);
-- exact subject/project/query boosts;
-- importance;
-- recency;
-- prior useful retrieval count;
-- manual-source preference;
-- optional FTS5 match position.
+Mixed CJK/Latin tokenization keeps short Traditional-Chinese phrases and identifiers searchable. If SQLite FTS5 is unavailable, Memory V2 falls back to deterministic in-process lexical ranking instead of failing startup.
 
-The prompt receives the highest-ranked active memories that fit the context character budget. Superseded rows are never injected.
+Expired and superseded rows are excluded from active retrieval.
 
-### Chinese / identifier search
+## Consolidation and project state
 
-The search document contains:
+Memory V2 still avoids semantic auto-merge by guess alone.
 
-- lowercase Latin/model/project tokens such as `yuupo`, `rtx`, `5070`;
-- CJK bigrams and trigrams such as `火箭`, `主傘`.
+Mutable personal/profile facts can supersede an older active value only when they map to the same conservative slot. Exact duplicates reconfirm the existing row rather than creating another copy.
 
-This avoids depending on SQLite's default tokenization behavior for short Traditional-Chinese phrases.
+Project memory remains a first-class domain with the existing roles:
 
-## FTS5 fallback
-
-`user_memories_fts` is rebuilt from active rows at startup. It contains pre-tokenized search text rather than being the source of truth.
-
-If Python's SQLite build does not include FTS5, startup logs a warning and Memory V2 continues using deterministic in-process lexical ranking. The Bot must not fail to start merely because FTS5 is unavailable.
-
-## Phase 2 passive learning
-
-Phase 2 addresses the other major failure mode: information can be useful and discussed clearly but never enter persistent memory because it does not match the legacy `我喜歡 / 我正在做` trigger phrases.
-
-`MemoryV2PassiveRuntime` is a Discord observer that never replies to messages. It shares the same per-user `/memory passive` state as the legacy extractor and only batches messages that look likely to contain durable project/event/profile information.
-
-### Local candidate gate
-
-The Phase 2 gate looks for signals such as:
-
-- durable first-person profile facts such as equipment/model changes;
-- project progress, milestones, next steps, blockers, configuration or architecture changes;
-- test pass/fail, fixes, deployment/version state;
-- explicit decisions and long-lived technical choices;
-- PR / branch / commit / merge state likely to matter later.
-
-Plain questions, URLs, commands, short noise, and simple preference/habit messages already handled by the legacy path are excluded locally where possible.
-
-### Structured extraction
-
-Eligible batches use the existing resilient no-tool Gemini path with request kind `memory-v2`; no additional tool permissions are exposed.
-
-The extractor may emit only:
-
-- `偏好`
-- `習慣`
-- `興趣`
-- `提醒`
-- `專案`
-- `事件`
-- `決策`
-
-Each draft contains a self-contained Traditional-Chinese statement plus confidence and importance. Low-confidence drafts are discarded before persistence.
-
-Project memories should name the project/entity directly instead of relying on pronouns. Stable profile facts should preserve forms such as `我的筆電顯卡是 RTX 5070` so Phase 1 mutable-slot supersession continues to work.
-
-### Passive safety boundary
-
-Passive extraction is stricter than manual memory. It must not automatically persist:
-
-- credentials or secrets;
-- exact addresses/contact identifiers;
-- health or medication information;
-- financial information;
-- political, religious, or sexual information;
-- interpersonal gossip or third-party private data;
-- transient mood, meals, weather, or one-off small talk;
-- persona/system/rule instructions.
-
-The model prompt applies these exclusions, and the parser independently rejects obvious sensitive/instruction-like outputs.
-
-### Coexistence with the legacy extractor
-
-Phase 2 currently runs beside the legacy passive extractor rather than rewriting Gemini routing code while the independent proactive/Search hotfix is still open.
-
-Simple legacy preference/habit messages remain on the old path. Phase 2 focuses on richer technical/project/event signals. Both paths write through the same Phase 1 Memory V2 SQLite upsert/index layer.
-
-## Phase 3 project state
-
-Phase 3 turns project memories from a flat pile of notes into explicit current-state slots plus preserved history. It still uses the same `user_memories` table and the same FTS/query-aware retrieval layer.
-
-Every project-related passive draft can carry a `project` name and one role:
-
-- `fact`: durable project fact/configuration that may coexist with other facts;
-- `status`: current overall state/progress;
-- `next_step`: current next action;
-- `blocker`: current blocker/problem;
-- `decision`: lasting project/technical decision;
-- `milestone`: notable completion/release/validation milestone;
-- `event`: other notable project event.
-
-### Mutable project slots
-
-The following roles have one active slot per guild + user + project:
-
+- `fact`
 - `status`
-- `blocker`
 - `next_step`
-
-Their memory keys use the deterministic form:
-
-```text
-project:<normalized project name>:<role>
-```
-
-A newer value supersedes the previous active value through the existing Memory V2 `status/superseded_by` mechanism. The old row remains in SQLite for audit/history but is excluded from prompt retrieval.
-
-For example:
-
-```text
-YuuPo status: still comparing IDL FFT bins
-        ↓ superseded by
-YuuPo status: FFT-bin validation complete, entering release review
-```
-
-A new blocker does not overwrite the current next step, and a new next step does not overwrite the current status: they are independent slots.
-
-### Preserved project history
-
-The following roles are historical and do not use mutable-slot replacement:
-
+- `blocker`
 - `decision`
 - `milestone`
 - `event`
 
-This preserves facts such as earlier validation milestones and architectural decisions even after project status advances.
+`status`, `next_step`, and `blocker` remain independent mutable slots per guild + user + project. Decisions, milestones, events, and compatible facts preserve history. The derived project summary remains a rebuildable projection and continues to use normal Memory V2 retrieval.
 
-### Derived project summary
+## Domain registry
 
-Whenever structured project memory changes, Memory V2 rebuilds one derived `專案摘要` memory for that project.
+Social/game classification is data-driven rather than a giant hardcoded decision tree. First-class game subdomains include the server's common games, including:
 
-The summary contains a bounded selection of:
+- `lifeafter`
+- `genshin`
+- `star_rail`
+- `zzz`
+- `honkai3`
+- `tears_of_themis`
+- `nexus_anima`
+- `petit_planet`
+- `counter_strike`
+- `arena_of_valor`
+- `minecraft`
 
-- current status;
-- current blocker;
-- current next step;
-- important project facts;
-- recent decisions;
-- recent milestones/events.
+The registry also supports daily/social/regional/project/misc cues. Strong explicit message evidence overrides a weaker channel prior, so a food conversation inside a game channel can still resolve as food.
 
-The summary itself is stored in `user_memories` with:
+Unknown/general topics can remain `misc` instead of being forced into a known game.
 
-- `source = derived`;
-- `memory_kind = project`;
-- a project-scoped summary memory key;
-- high importance so ordinary project-status questions can retrieve it.
+## Channel memory policy
 
-It is **not** a second source of truth. It is a rebuildable projection of active project memories. Ordinary Memory V2 FTS and lexical ranking retrieve it just like any other active memory.
-
-### Project isolation
-
-All project state remains scoped by:
+Each channel resolves a `ChannelMemoryPolicy`. The admin override key is:
 
 ```text
-guild_id + user_id + project
+memory_channel_mode:<guild_id>:<channel_id>
 ```
 
-A user's `YuuPo` status cannot leak into that user's `DC_BOT` snapshot, and another Discord user's project memory is not part of the query.
+Supported values:
 
-## Safety and privacy boundaries
+```text
+auto
+mixed
+social
+game
+game:<subdomain>
+project
+off
+```
 
-Memory V2 keeps the existing rules:
+Important behavior:
 
-- memory is scoped by Discord guild + user;
-- credentials/secrets and instruction-like persona/system changes are rejected;
-- retrieved memory is inserted as untrusted factual context, never as system authority;
-- only active rows are supplied to prompts;
-- deletion and clear remain user-scoped.
+- `mixed` permits multiple active topics and does not impose a fixed domain;
+- `game:<subdomain>` supplies a game prior, but strong explicit message evidence can override it;
+- `project` keeps project memory personal and disables guild-shared episode formation;
+- `off` disables passive personal/shared formation in that channel;
+- manual override wins over channel/category-name inference.
 
-## Later phases
+## Conversation session tracker
 
-Do not add semantic auto-merge merely because embeddings are available. Future work should be gated by measured retrieval/consolidation fixtures.
+Temporary topic continuity is kept in memory only by `ConversationSessionState`; it is not another long-term database.
 
-Potential next steps after Phase 3 live validation:
+The first-version bounds are:
 
-- conflict-aware consolidation for project facts without deterministic mutable slots;
-- optional local or API embeddings as an additional retrieval signal, not the sole source of truth;
-- memory inspection/search UX and provenance display;
-- retrieval evaluation fixtures with recall/precision targets;
-- source message/channel provenance where appropriate without exposing other users' private content;
-- decay/archive policy for stale episodic noise while keeping decisions and important milestones durable.
+```text
+max topics/channel        = 4
+max participants/topic    = 12
+soft decay                = 2 minutes
+strong decay              = 5 minutes
+implicit-context cutoff   = 15 minutes
+archive                    = 30 minutes
+```
 
-Embeddings remain optional. The deterministic lexical/FTS baseline stays available as a measurable fallback.
+The tracker uses explicit domain evidence, participant affinity, message/reply linkage, and recency. Replying to an older message can reconnect to that older topic even if newer unrelated chat exists.
+
+This is what allows one `#閒聊` channel to keep Genshin, food, and CS conversations separate instead of contaminating each other.
+
+## One passive pipeline
+
+`MemoryV2PassiveRuntime` is now the single owner of passive durable-memory extraction.
+
+`AssistantCommands` no longer owns the legacy passive queue, extraction lock, or periodic legacy flush task. The existing `/memory passive` state remains authoritative:
+
+```text
+passive_memory_enabled:<guild_id>:<user_id>
+```
+
+Disabling passive memory prevents extraction and clears disabled pending work in the V2 runtime. Explicit/manual memory (`/memory add` and chat requests such as `記住 ...`) remains a separate authoritative path.
+
+The unified passive gate accepts durable profile/preferences, supported social/game facts, and project/event state while rejecting transient small talk, ordinary questions, URLs/commands, explicit memory requests, sensitive data, and third-party gossip.
+
+High-confidence local domain/session routing does not add a separate Gemini classification call for every message. Gemini extraction is reserved for bounded candidate batches.
+
+## Provenance, reinforcement, and conflicts
+
+Passive personal memory provenance stores message/channel identifiers, timestamps, batch IDs, provenance kind, and optional `session_key`; it does not duplicate raw Discord message text.
+
+Repeated compatible observations can reinforce eligible personal/social memories. Cross-user personal referenceability is intentionally stricter than ordinary owner-only retrieval and requires safe/public provenance plus policy eligibility.
+
+Project fact conflict detection remains advisory: overlapping active project facts can be recorded in the conflict ledger instead of being silently overwritten.
+
+## Social Memory Resolver
+
+`SocialParticipant` now has access to a bounded resolver that can combine:
+
+1. relevant memories belonging to the current speaker;
+2. eligible socially-referenceable personal memories from other users;
+3. active guild-shared memories;
+4. the active session topic/domain.
+
+The resolver is bounded and topic-aware. Personal social memory is filtered to the current session topic instead of allowing unrelated remembered facts to bleed into the conversation.
+
+Memory context is injected as untrusted factual context, not as instruction authority. Resolver/database failures fall back to an empty memory context rather than breaking ordinary social participation.
+
+Most importantly, **memory never changes the outer participation authority**. Relevant memory does not by itself cause Moxue to speak. Existing `NO_REPLY`, cooldown, DND, human-first, knowledge-help, comfort, and other participation gates still decide whether a response is allowed.
+
+Cross-user social memory is not injected into comfort/crisis handling.
+
+## Privacy boundary
+
+Passive storage and social retrieval reject or prevent unsafe promotion of:
+
+- credentials, tokens, API keys, verification codes, or instruction-like rule/persona changes;
+- exact addresses/contact identifiers and other sensitive identifiers;
+- health/medication information;
+- financial information;
+- political, religious, or sexual information;
+- third-party private data, rumors, and interpersonal gossip;
+- transient moods, one-off meals/weather, and low-value small talk.
+
+Relationship/gossip discussion may remain in temporary conversation context when needed for natural chat, but it must not become a permanent cross-user rumor database.
+
+## Inspection and admin commands
+
+The `/memory` group includes the original personal-memory commands plus Memory V2 inspection/admin commands:
+
+```text
+/memory add
+/memory list
+/memory delete
+/memory clear
+/memory passive
+
+/memory search <query>
+/memory projects
+/memory project <name>
+/memory provenance <memory_id>
+/memory conflicts
+/memory channel <mode>                 # DJ/admin
+/memory shared_search <query>
+/memory shared_forget <memory_id>      # DJ/admin
+```
+
+Inspection responses are ephemeral. Personal inspection remains user-scoped. Shared deletion is guild-scoped and requires DJ/admin permission.
+
+## Validation baseline
+
+The social rebalance regression suite covers, among other cases:
+
+- retention/expiry and additive migration;
+- separate game subdomains and channel-policy precedence;
+- multi-topic session tracking, reply-to-old-topic behavior, decay, and idempotent observation;
+- one passive extraction pipeline only;
+- session-aware provenance;
+- shared-memory promotion/reinforcement/deletion;
+- personal reinforcement and conservative cross-user referenceability;
+- bounded social-memory injection without changing silence/NO_REPLY authority;
+- mixed-topic transcripts;
+- passive-memory cost and failure fallbacks;
+- legacy project/FTS/supersession behavior.
+
+Embeddings remain optional. They are not required for this release and should only be added later as a measured retrieval signal rather than replacing the deterministic baseline.

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Mapping
 
+from discord_ai_assistant.ai.memory_retention import RETENTION_LONG
+
 
 MEMORY_KIND_SEMANTIC = "semantic"
 MEMORY_KIND_PREFERENCE = "preference"
@@ -80,6 +82,13 @@ class MemoryMatch:
     subject: str | None
     project: str | None
     score: float
+    domain: str | None = None
+    subdomain: str | None = None
+    entity_type: str | None = None
+    entity: str | None = None
+    retention: str = RETENTION_LONG
+    reinforcement_count: int = 0
+    socially_referenceable: bool = False
 
 
 def normalize_memory_text(value: str) -> str:
@@ -213,11 +222,25 @@ def score_memory_candidate(
     content = str(_row_value(row, "content", ""))
     subject_value = _row_value(row, "subject")
     project_value = _row_value(row, "project")
+    domain_value = _row_value(row, "domain")
+    subdomain_value = _row_value(row, "subdomain")
+    entity_value = _row_value(row, "entity")
     subject = str(subject_value) if subject_value else ""
     project = str(project_value) if project_value else ""
+    domain = str(domain_value) if domain_value else ""
+    subdomain = str(subdomain_value) if subdomain_value else ""
+    entity = str(entity_value) if entity_value else ""
 
     query_terms = set(memory_terms(query))
-    document_terms = set(memory_terms(" ".join(part for part in (category, content, subject, project) if part)))
+    document_terms = set(
+        memory_terms(
+            " ".join(
+                part
+                for part in (category, content, subject, project, domain, subdomain, entity)
+                if part
+            )
+        )
+    )
     if query_terms:
         overlap = query_terms & document_terms
         weighted_overlap = sum(min(2.0, 0.7 + (len(term) * 0.18)) for term in overlap)
@@ -232,6 +255,10 @@ def score_memory_candidate(
         if project and project.casefold() in normalized_query:
             exact_boost += 0.16
         if subject and subject.casefold() in normalized_query:
+            exact_boost += 0.12
+        if subdomain and subdomain.casefold() in normalized_query:
+            exact_boost += 0.12
+        if entity and entity.casefold() in normalized_query:
             exact_boost += 0.12
         if normalized_query in content.casefold():
             exact_boost += 0.10

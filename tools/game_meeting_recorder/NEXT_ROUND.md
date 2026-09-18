@@ -1,6 +1,7 @@
 # Meeting Review V2 — Next Round Plan
 
-> Status: **PLANNING ONLY / NOT IMPLEMENTED**
+> Status: **P0-1 IMPLEMENTED / AUTOMATED-TESTED / LIVE E2E NOT VALIDATED**.
+> All other targets below remain **PLANNING ONLY / NOT IMPLEMENTED**.
 >
 > Frozen baseline: `agent/game-meeting-recorder` at `fd63204b2a20cfb2a7af24b52b713e7a6435993f`.
 > All V2 work must branch from this verified baseline and must not retroactively change the completed V1 status.
@@ -13,9 +14,9 @@ Improve the human-review and learning loop without weakening the current safety 
 
 ### 1. Per-candidate learning selection
 
-Current behavior is all-or-nothing: `套用學習並重整` applies every proposed candidate.
+V1 behavior was all-or-nothing: `套用學習並重整` applied every proposed candidate.
 
-Planned UX:
+Implemented UX:
 - Show up to the existing bounded candidate count in a Discord multi-select control.
 - Reviewer explicitly selects which `asr_alias`, `domain_term`, and `report_preference` candidates may be learned.
 - Actions:
@@ -24,6 +25,15 @@ Planned UX:
   - `取消`
 - Persist a per-candidate result such as approved/rejected/skipped instead of treating one revision as a single learning decision.
 - Never learn unselected candidates.
+
+Implementation notes (2026-09-10):
+- The full-article review multi-select starts empty; learning requires an explicit selection.
+- Before regeneration, existing candidate status fields persist selected items as `approved` and unselected items as `skipped`; no schema migration is required.
+- Learning consumes only `approved` items and records successful applications as `applied`, including selection filtering for ASR training examples.
+- Retry after a failed Gemini regeneration preserves the first decision, including after reopening the database. Cancelling a failed regeneration retains `applied` / `skipped` audit results.
+- Local automated verification (2026-09-10, Windows / Python 3.12): **24 focused tests passed** (`tests.test_meeting_full_article` and `tests.test_meeting_feedback`); **455 full-suite tests passed** (`unittest discover -s tests -v`). Project imports were verified against this worktree and SQLite test paths were confined to isolated data in this worktree.
+- Real Discord/Gemini E2E: **NOT VALIDATED**; local automated results do not establish live E2E success.
+- Known hard-interruption limitation: knowledge/preference writes, `applied` status updates, and ASR example writes are not one atomic transaction. Termination before the status commit can repeat learning writes on retry; termination after that commit but before ASR recording can leave examples missing. Recovery tests cover Gemini failure and subsequent retry, not arbitrary process termination or power loss; hard-interruption atomicity is **NOT GUARANTEED**.
 
 Acceptance criteria:
 - Candidate selection survives regeneration/retry safely.

@@ -358,6 +358,18 @@ class MeetingFeedbackStore:
             )
         return result
 
+    def select_candidates(self, revision_id: int, selected_candidate_ids: Iterable[int]) -> None:
+        """Persist the first review decision before learning or regeneration can fail."""
+        ids = sorted({int(item) for item in selected_candidate_ids})
+        placeholders = ",".join("?" for _ in ids) or "NULL"
+        self.connection.execute(
+            f"""UPDATE meeting_feedback_candidates
+                SET status = CASE WHEN id IN ({placeholders}) THEN 'approved' ELSE 'skipped' END
+                WHERE revision_id = ? AND status = 'pending'""",
+            (*ids, revision_id),
+        )
+        self.connection.commit()
+
     def set_candidate_status(self, candidate_ids: Iterable[int], status: str) -> None:
         ids = [int(item) for item in candidate_ids]
         if not ids:

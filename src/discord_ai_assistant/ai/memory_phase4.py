@@ -51,6 +51,12 @@ class MemoryObservation:
     message_id: int
     created_at: str | None
     urgency: str = MEMORY_URGENCY_NORMAL
+    session_key: str | None = None
+    domain: str | None = None
+    subdomain: str | None = None
+    topic: str | None = None
+    shared_allowed: bool = False
+    participant_ids: tuple[int, ...] = ()
 
 
 def memory_urgency(content: str) -> str:
@@ -87,6 +93,9 @@ def ensure_memory_phase4_schema(database: Any) -> None:
             observed_at TEXT,
             batch_id TEXT NOT NULL,
             provenance_kind TEXT NOT NULL DEFAULT 'passive_batch',
+            session_key TEXT,
+            public_social_context INTEGER NOT NULL DEFAULT 0,
+            reinforcement_credited INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(memory_id, message_id, batch_id)
         );
@@ -110,6 +119,24 @@ def ensure_memory_phase4_schema(database: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_memory_conflicts_owner
             ON memory_conflicts(guild_id, user_id, status, id DESC);
         """
+    )
+    columns = {
+        str(row[1])
+        for row in connection.execute("PRAGMA table_info(memory_provenance)").fetchall()
+    }
+    if "session_key" not in columns:
+        connection.execute("ALTER TABLE memory_provenance ADD COLUMN session_key TEXT")
+    if "public_social_context" not in columns:
+        connection.execute(
+            "ALTER TABLE memory_provenance ADD COLUMN public_social_context INTEGER NOT NULL DEFAULT 0"
+        )
+    if "reinforcement_credited" not in columns:
+        connection.execute(
+            "ALTER TABLE memory_provenance ADD COLUMN reinforcement_credited INTEGER NOT NULL DEFAULT 0"
+        )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_memory_provenance_session
+           ON memory_provenance(guild_id, user_id, memory_id, session_key)"""
     )
     connection.commit()
 
@@ -140,8 +167,9 @@ def record_memory_provenance(
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO memory_provenance(
                        memory_id, guild_id, user_id, channel_id, message_id,
-                       observed_at, batch_id, provenance_kind
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'passive_batch')""",
+                       observed_at, batch_id, provenance_kind, session_key,
+                       public_social_context
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'passive_batch', ?, ?)""",
                 (
                     int(memory_id),
                     int(guild_id),
@@ -150,6 +178,8 @@ def record_memory_provenance(
                     int(item.message_id),
                     item.created_at,
                     batch_id,
+                    item.session_key,
+                    int(bool(item.shared_allowed)),
                 ),
             )
             inserted += max(0, int(cursor.rowcount))
@@ -176,7 +206,8 @@ def memory_provenance_rows(
         return []
     return list(
         connection.execute(
-            """SELECT channel_id, message_id, observed_at, batch_id, provenance_kind, created_at
+            """SELECT channel_id, message_id, observed_at, batch_id, provenance_kind,
+                      session_key, public_social_context, reinforcement_credited, created_at
                FROM memory_provenance
                WHERE memory_id = ? AND guild_id = ? AND user_id = ?
                ORDER BY id DESC LIMIT ?""",

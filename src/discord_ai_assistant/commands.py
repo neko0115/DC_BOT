@@ -15,13 +15,9 @@ except ImportError:
     yt_dlp = None
 
 from discord_ai_assistant.ai.gemini import GeminiAssistant, GeminiRequestError
-from discord_ai_assistant.ai.memory import (
-    is_disallowed_memory,
-    is_passive_memory_candidate,
-    is_sensitive_memory,
-    parse_explicit_memory_request,
-)
+from discord_ai_assistant.ai.memory import is_disallowed_memory, is_sensitive_memory
 from discord_ai_assistant.ai.persona import BASE_PERSONA_INSTRUCTION, WorkloadMood
+from discord_ai_assistant.ai.memory_session import ConversationSessionState
 from discord_ai_assistant.ai.social import SocialParticipant
 from discord_ai_assistant.ai.tools import ToolContext
 from discord_ai_assistant.config import Settings
@@ -41,9 +37,6 @@ from discord_ai_assistant.voice.synthesis import WindowsSpeechSynthesizer
 IMAGE_MAX_BYTES = 10 * 1024 * 1024
 VOICE_CHAT_READ_COOLDOWN_SECONDS = 3
 VOICE_CHAT_READ_MAX_CHARACTERS = 180
-PASSIVE_MEMORY_IDLE_SECONDS = 5 * 60
-PASSIVE_MEMORY_MIN_INTERVAL_SECONDS = 30 * 60
-PASSIVE_MEMORY_BATCH_SIZE = 5
 LOGGER = logging.getLogger(__name__)
 # CPU-friendly local Whisper models exposed to DJ tuning.
 VOICE_RECOGNITION_MODELS = ("tiny", "base", "small", "medium")
@@ -130,6 +123,7 @@ class AssistantCommands(commands.Cog):
         self.ai = ai
         self.history = RecentMessageHistory()
         self.workload = WorkloadMood()
+        self.memory_session = ConversationSessionState()
         self.social = SocialParticipant(settings, self.history, ai, self.workload, database)
         self.speech = WindowsSpeechSynthesizer(settings.project_root / "data" / "tts")
         self.recognition = VoiceRecognitionController(
@@ -146,9 +140,6 @@ class AssistantCommands(commands.Cog):
         )
         self._last_ai_request: dict[tuple[int, int], float] = {}
         self._last_voice_chat_read: dict[int, float] = {}
-        self._pending_passive_memories: dict[tuple[int, int], list[tuple[float, str]]] = {}
-        self._last_passive_memory_extraction: dict[tuple[int, int], float] = {}
-        self._passive_memory_lock = asyncio.Lock()
         self._analyze_message_menu = app_commands.ContextMenu(
             name="請墨雪分析此訊息",
             callback=self.analyze_message_context,
@@ -159,13 +150,11 @@ class AssistantCommands(commands.Cog):
         self._topic_starter.start()
         self._empty_voice_disconnect.start()
         self._voice_recognition_flush.start()
-        self._passive_memory_flush.start()
 
     def cog_unload(self) -> None:
         self._topic_starter.cancel()
         self._empty_voice_disconnect.cancel()
         self._voice_recognition_flush.cancel()
-        self._passive_memory_flush.cancel()
         for guild_id in self.music.active_guild_ids():
             self.recognition.stop(guild_id)
             self.music.stop_listening(guild_id)
@@ -801,8 +790,6 @@ class AssistantCommands(commands.Cog):
             return
         guild_id, user_id = interaction.guild.id, interaction.user.id
         self.database.set_state(f"passive_memory_enabled:{guild_id}:{user_id}", "1" if enabled else "0")
-        if not enabled:
-            self._pending_passive_memories.pop((guild_id, user_id), None)
         status = "開啟" if enabled else "關閉"
         await self._respond(interaction, f"已{status}你的被動記憶整理。", ephemeral=True)
 
@@ -856,7 +843,6 @@ class AssistantCommands(commands.Cog):
         if not self.bot.user or message.author.bot or not message.guild:
             return
         self.database.record_user_message_activity(message.guild.id, message.author.id)
-        self._collect_passive_memory(message)
         await self._read_voice_channel_chat(message)
         self.social.record_activity(message)
         if not message_mentions_bot(self.bot.user.id, message.raw_mentions, message.mentions):
@@ -936,63 +922,9 @@ class AssistantCommands(commands.Cog):
     def _voice_chat_reading_enabled(self, guild_id: int) -> bool:
         return self.database.get_state(f"voice_chat_read_enabled:{guild_id}") != "0"
 
-    def _collect_passive_memory(self, message: discord.Message) -> None:
-        if not self._passive_memory_enabled(message.guild.id, message.author.id):
-            return
-        content = " ".join(message.clean_content.split())
-        if parse_explicit_memory_request(content):
-            return
-        if not is_passive_memory_candidate(content):
-            return
-        key = (message.guild.id, message.author.id)
-        entries = self._pending_passive_memories.setdefault(key, [])
-        if entries and entries[-1][1] == content:
-            return
-        entries.append((time.monotonic(), content))
-        del entries[:-PASSIVE_MEMORY_BATCH_SIZE]
-
     def _passive_memory_enabled(self, guild_id: int, user_id: int) -> bool:
         return self.database.get_state(f"passive_memory_enabled:{guild_id}:{user_id}") != "0"
 
-    @tasks.loop(minutes=1)
-    async def _passive_memory_flush(self) -> None:
-        if not self.ai.enabled or self._passive_memory_lock.locked():
-            return
-        now = time.monotonic()
-        selected: tuple[tuple[int, int], list[tuple[float, str]]] | None = None
-        for key, entries in self._pending_passive_memories.items():
-            if (
-                entries
-                and now - entries[-1][0] >= PASSIVE_MEMORY_IDLE_SECONDS
-                and now - self._last_passive_memory_extraction.get(key, 0) >= PASSIVE_MEMORY_MIN_INTERVAL_SECONDS
-            ):
-                selected = (key, entries)
-                break
-        if not selected:
-            return
-        key, entries = selected
-        self._pending_passive_memories.pop(key, None)
-        self._last_passive_memory_extraction[key] = now
-        guild_id, user_id = key
-        try:
-            async with self._passive_memory_lock:
-                drafts = await self.ai.extract_user_memories([content for _, content in entries])
-            stored = 0
-            for draft in drafts:
-                memory = self.database.add_user_memory_if_new(
-                    guild_id, user_id, f"自動{draft.category}", draft.content
-                )
-                stored += memory is not None
-            if stored:
-                LOGGER.info("Stored %s passive memories for user %s in guild %s", stored, user_id, guild_id)
-        except (GeminiRequestError, RuntimeError, ValueError):
-            LOGGER.warning("Passive memory extraction failed for user %s in guild %s", user_id, guild_id, exc_info=True)
-        except Exception:
-            LOGGER.exception("Unexpected passive memory extraction failure for user %s in guild %s", user_id, guild_id)
-
-    @_passive_memory_flush.before_loop
-    async def _before_passive_memory_flush(self) -> None:
-        await self.bot.wait_until_ready()
 
     @tasks.loop(minutes=5)
     async def _topic_starter(self) -> None:

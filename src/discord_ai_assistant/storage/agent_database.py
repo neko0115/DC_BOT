@@ -4,9 +4,15 @@ import asyncio
 import logging
 import sqlite3
 from collections.abc import Iterable
+from datetime import datetime, timezone
 
 from discord_ai_assistant.agent.events import AgentEvent, AgentEventBus, AgentEventKind
 from discord_ai_assistant.ai.memory import is_disallowed_memory
+from discord_ai_assistant.ai.memory_retention import (
+    RETENTION_LONG,
+    VALID_RETENTIONS,
+    expires_at_for_retention,
+)
 from discord_ai_assistant.ai.memory_v2 import (
     MEMORY_KIND_SEMANTIC,
     MemoryMatch,
@@ -57,6 +63,15 @@ class AgentDatabase(Database):
             "status": "TEXT NOT NULL DEFAULT 'active'",
             "superseded_by": "INTEGER",
             "last_confirmed": "TEXT",
+            "domain": "TEXT",
+            "subdomain": "TEXT",
+            "entity_type": "TEXT",
+            "entity": "TEXT",
+            "retention": "TEXT NOT NULL DEFAULT 'long'",
+            "expires_at": "TEXT",
+            "reinforcement_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_reinforced": "TEXT",
+            "socially_referenceable": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, definition in additions.items():
             if name not in existing:
@@ -72,6 +87,10 @@ class AgentDatabase(Database):
                 ON user_memories(guild_id, user_id, memory_key, status);
             CREATE INDEX IF NOT EXISTS idx_user_memories_project
                 ON user_memories(guild_id, user_id, project, status);
+            CREATE INDEX IF NOT EXISTS idx_user_memories_domain
+                ON user_memories(guild_id, user_id, status, domain, subdomain);
+            CREATE INDEX IF NOT EXISTS idx_user_memories_expiry
+                ON user_memories(status, expires_at);
             """
         )
         self.connection.commit()
@@ -100,6 +119,12 @@ class AgentDatabase(Database):
                        WHERE id = ?""",
                     (kind, inferred_subject, inferred_project, inferred_key, int(row["id"])),
                 )
+            self.connection.execute(
+                """UPDATE user_memories
+                   SET domain = COALESCE(domain, 'project'),
+                       subdomain = COALESCE(subdomain, project)
+                   WHERE project IS NOT NULL AND TRIM(project) != ''"""
+            )
 
     def _ensure_memory_fts(self) -> None:
         try:
@@ -121,7 +146,8 @@ class AgentDatabase(Database):
         with self.connection:
             self.connection.execute("DELETE FROM user_memories_fts")
             rows = self.connection.execute(
-                """SELECT id, guild_id, user_id, category, content, subject, project
+                """SELECT id, guild_id, user_id, category, content, subject, project,
+                          domain, subdomain, entity_type, entity
                    FROM user_memories WHERE status = 'active'"""
             ).fetchall()
             for row in rows:
@@ -142,6 +168,10 @@ class AgentDatabase(Database):
                     str(row["content"]),
                     str(row["subject"]) if row["subject"] else None,
                     str(row["project"]) if row["project"] else None,
+                    str(row["domain"]) if row["domain"] else None,
+                    str(row["subdomain"]) if row["subdomain"] else None,
+                    str(row["entity_type"]) if row["entity_type"] else None,
+                    str(row["entity"]) if row["entity"] else None,
                 ),
             ),
         )
@@ -159,7 +189,8 @@ class AgentDatabase(Database):
                 ids,
             )
             rows = self.connection.execute(
-                f"""SELECT id, guild_id, user_id, category, content, subject, project
+                f"""SELECT id, guild_id, user_id, category, content, subject, project,
+                            domain, subdomain, entity_type, entity
                     FROM user_memories
                     WHERE id IN ({placeholders}) AND status = 'active'""",
                 ids,
@@ -194,6 +225,15 @@ class AgentDatabase(Database):
         self._publish_memory_created(guild_id, user_id, memory, source="passive")
         return memory
 
+    @staticmethod
+    def _optional_memory_text(value: str | None, *, limit: int) -> str | None:
+        if value is None:
+            return None
+        normalized = normalize_memory_text(value)
+        if not normalized:
+            return None
+        return normalized[:limit]
+
     def _upsert_user_memory(
         self,
         guild_id: int,
@@ -208,6 +248,13 @@ class AgentDatabase(Database):
         project: str | None = None,
         confidence: float = 1.0,
         memory_key: str | None = None,
+        domain: str | None = None,
+        subdomain: str | None = None,
+        entity_type: str | None = None,
+        entity: str | None = None,
+        retention: str = RETENTION_LONG,
+        expires_at: str | None = None,
+        socially_referenceable: bool = False,
     ) -> tuple[UserMemory, bool]:
         normalized_category = normalize_memory_text(category)
         normalized_content = normalize_memory_text(content)
@@ -229,6 +276,14 @@ class AgentDatabase(Database):
         )
         resolved_confidence = max(0.0, min(float(confidence), 1.0))
         resolved_importance = max(1, min(int(importance), 3))
+        resolved_domain = self._optional_memory_text(domain, limit=40)
+        resolved_subdomain = self._optional_memory_text(subdomain, limit=80)
+        resolved_entity_type = self._optional_memory_text(entity_type, limit=40)
+        resolved_entity = self._optional_memory_text(entity, limit=120)
+        resolved_retention = normalize_memory_text(retention).casefold()
+        if resolved_retention not in VALID_RETENTIONS:
+            raise ValueError(f"Unsupported memory retention: {retention}")
+        resolved_expires_at = expires_at or expires_at_for_retention(resolved_retention)
 
         exact = self.connection.execute(
             """SELECT * FROM user_memories
@@ -248,6 +303,13 @@ class AgentDatabase(Database):
                            project = COALESCE(project, ?),
                            memory_key = COALESCE(memory_key, ?),
                            confidence = MAX(confidence, ?),
+                           domain = COALESCE(domain, ?),
+                           subdomain = COALESCE(subdomain, ?),
+                           entity_type = COALESCE(entity_type, ?),
+                           entity = COALESCE(entity, ?),
+                           retention = CASE WHEN retention IS NULL OR retention = '' THEN ? ELSE retention END,
+                           expires_at = COALESCE(expires_at, ?),
+                           socially_referenceable = CASE WHEN ? THEN 1 ELSE socially_referenceable END,
                            last_confirmed = CURRENT_TIMESTAMP,
                            updated_at = CURRENT_TIMESTAMP
                        WHERE id = ?""",
@@ -259,6 +321,13 @@ class AgentDatabase(Database):
                         resolved_project,
                         resolved_key,
                         resolved_confidence,
+                        resolved_domain,
+                        resolved_subdomain,
+                        resolved_entity_type,
+                        resolved_entity,
+                        resolved_retention,
+                        resolved_expires_at,
+                        bool(socially_referenceable),
                         memory_id,
                     ),
                 )
@@ -282,8 +351,11 @@ class AgentDatabase(Database):
             cursor = self.connection.execute(
                 """INSERT INTO user_memories(
                        guild_id, user_id, category, content, importance, source,
-                       memory_kind, subject, project, memory_key, confidence, status, last_confirmed
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP)""",
+                       memory_kind, subject, project, memory_key, confidence, status, last_confirmed,
+                       domain, subdomain, entity_type, entity, retention, expires_at,
+                       reinforcement_count, last_reinforced, socially_referenceable
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP,
+                             ?, ?, ?, ?, ?, ?, 0, NULL, ?)""",
                 (
                     guild_id,
                     user_id,
@@ -296,6 +368,13 @@ class AgentDatabase(Database):
                     resolved_project,
                     resolved_key,
                     resolved_confidence,
+                    resolved_domain,
+                    resolved_subdomain,
+                    resolved_entity_type,
+                    resolved_entity,
+                    resolved_retention,
+                    resolved_expires_at,
+                    int(bool(socially_referenceable)),
                 ),
             )
             new_id = int(cursor.lastrowid)
@@ -313,7 +392,45 @@ class AgentDatabase(Database):
         assert row is not None
         return self._user_memory(row), True
 
+    def expire_due_user_memories(
+        self,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+        *,
+        now_iso: str | None = None,
+    ) -> int:
+        """Mark due active memories expired without physically deleting them."""
+
+        now_value = now_iso or datetime.now(timezone.utc).isoformat()
+        where = ["status = 'active'", "expires_at IS NOT NULL", "expires_at <= ?"]
+        params: list[object] = [now_value]
+        if guild_id is not None:
+            where.append("guild_id = ?")
+            params.append(int(guild_id))
+        if user_id is not None:
+            where.append("user_id = ?")
+            params.append(int(user_id))
+        clause = " AND ".join(where)
+        rows = self.connection.execute(
+            f"SELECT id FROM user_memories WHERE {clause}",
+            params,
+        ).fetchall()
+        ids = tuple(int(row["id"]) for row in rows)
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        with self.connection:
+            self.connection.execute(
+                f"""UPDATE user_memories
+                    SET status = 'expired', updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})""",
+                ids,
+            )
+        self._sync_fts_ids(ids)
+        return len(ids)
+
     def list_user_memories(self, guild_id: int, user_id: int, limit: int = 20) -> list[UserMemory]:
+        self.expire_due_user_memories(guild_id, user_id)
         rows = self.connection.execute(
             """SELECT * FROM user_memories
                WHERE guild_id = ? AND user_id = ? AND status = 'active'
@@ -394,6 +511,7 @@ class AgentDatabase(Database):
         *,
         limit: int = 10,
     ) -> list[MemoryMatch]:
+        self.expire_due_user_memories(guild_id, user_id)
         normalized_query = normalize_memory_text(query)
         fts_positions = self._fts_candidate_positions(guild_id, user_id, normalized_query)
         rows = self.connection.execute(
@@ -434,6 +552,13 @@ class AgentDatabase(Database):
                 subject=str(row["subject"]) if row["subject"] else None,
                 project=str(row["project"]) if row["project"] else None,
                 score=score,
+                domain=str(row["domain"]) if row["domain"] else None,
+                subdomain=str(row["subdomain"]) if row["subdomain"] else None,
+                entity_type=str(row["entity_type"]) if row["entity_type"] else None,
+                entity=str(row["entity"]) if row["entity"] else None,
+                retention=str(row["retention"] or RETENTION_LONG),
+                reinforcement_count=int(row["reinforcement_count"] or 0),
+                socially_referenceable=bool(row["socially_referenceable"]),
             )
             ranked.append((score, int(row["importance"] or 1), match))
 

@@ -43,7 +43,17 @@ class MemoryPhase4StorageTests(unittest.TestCase):
         self.database.close()
         self.tempdir.cleanup()
 
-    def _observation(self, message_id: int, content: str = "我的筆電顯卡現在是 RTX 5070") -> MemoryObservation:
+    def _observation(
+        self,
+        message_id: int,
+        content: str = "我的筆電顯卡現在是 RTX 5070",
+        *,
+        session_key: str | None = None,
+        domain: str | None = None,
+        subdomain: str | None = None,
+        topic: str | None = None,
+        shared_allowed: bool = False,
+    ) -> MemoryObservation:
         return MemoryObservation(
             monotonic_at=float(message_id),
             content=content,
@@ -51,6 +61,11 @@ class MemoryPhase4StorageTests(unittest.TestCase):
             message_id=message_id,
             created_at=f"2026-09-05T17:00:{message_id % 60:02d}+00:00",
             urgency=memory_urgency(content),
+            session_key=session_key,
+            domain=domain,
+            subdomain=subdomain,
+            topic=topic,
+            shared_allowed=shared_allowed,
         )
 
     def test_nonproject_passive_memory_preserves_confidence_importance_and_provenance(self) -> None:
@@ -73,6 +88,163 @@ class MemoryPhase4StorageTests(unittest.TestCase):
 
         provenance = memory_provenance_rows(self.database, 1, 2, int(row["id"]))
         self.assertEqual({int(item["message_id"]) for item in provenance}, {100, 101})
+
+    def test_domain_scoped_provenance_excludes_other_mixed_batch_topics(self) -> None:
+        draft = PassiveMemoryV2Draft(
+            "偏好",
+            "我很喜歡原神的抽卡活動",
+            0.91,
+            2,
+            domain="game",
+            subdomain="genshin",
+            memory_kind="preference",
+            entity_type="activity",
+            entity="gacha",
+        )
+        genshin = self._observation(
+            102,
+            "原神這池我還是很喜歡",
+            session_key="123:genshin",
+            domain="game",
+            subdomain="genshin",
+            topic="gacha",
+            shared_allowed=True,
+        )
+        food = self._observation(
+            103,
+            "晚餐等等吃拉麵",
+            session_key="123:food",
+            domain="daily",
+            subdomain="food",
+            topic="meal",
+            shared_allowed=True,
+        )
+        store_passive_memory_v2_drafts(
+            self.database,
+            1,
+            2,
+            [draft],
+            observations=[genshin, food],
+        )
+        row = self.database.connection.execute(
+            "SELECT id FROM user_memories WHERE guild_id = 1 AND user_id = 2"
+        ).fetchone()
+        provenance = memory_provenance_rows(self.database, 1, 2, int(row["id"]))
+        self.assertEqual([int(item["message_id"]) for item in provenance], [102])
+
+    def test_unmatched_domain_draft_cannot_borrow_sessions_for_reinforcement_or_referenceability(self) -> None:
+        draft = PassiveMemoryV2Draft(
+            "偏好",
+            "我很討厭 Counter-Strike 的 Mirage",
+            0.94,
+            2,
+            domain="game",
+            subdomain="counter_strike",
+            memory_kind="preference",
+            entity_type="map",
+            entity="Mirage",
+        )
+        initial = self._observation(
+            104,
+            draft.content,
+            session_key="123:cs",
+            domain="game",
+            subdomain="counter_strike",
+            topic="map",
+            shared_allowed=True,
+        )
+        store_passive_memory_v2_drafts(
+            self.database,
+            1,
+            2,
+            [draft],
+            observations=[initial],
+        )
+        row = self.database.connection.execute(
+            "SELECT id, reinforcement_count, socially_referenceable FROM user_memories WHERE guild_id = 1 AND user_id = 2"
+        ).fetchone()
+        memory_id = int(row["id"])
+        self.assertEqual(int(row["reinforcement_count"]), 0)
+        self.assertEqual(int(row["socially_referenceable"]), 0)
+
+        unrelated = [
+            self._observation(
+                106,
+                "原神這池又歪了",
+                session_key="123:genshin-2",
+                domain="game",
+                subdomain="genshin",
+                topic="gacha",
+                shared_allowed=True,
+            ),
+            self._observation(
+                107,
+                "晚餐吃拉麵",
+                session_key="123:food-2",
+                domain="daily",
+                subdomain="food",
+                topic="meal",
+                shared_allowed=True,
+            ),
+        ]
+        stored = store_passive_memory_v2_drafts(
+            self.database,
+            1,
+            2,
+            [draft],
+            observations=unrelated,
+        )
+        self.assertEqual(stored, 0)
+
+        provenance = memory_provenance_rows(self.database, 1, 2, memory_id, limit=10)
+        self.assertEqual([int(item["message_id"]) for item in provenance], [104])
+        row = self.database.connection.execute(
+            "SELECT reinforcement_count, socially_referenceable FROM user_memories WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        self.assertEqual(int(row["reinforcement_count"]), 0)
+        self.assertEqual(int(row["socially_referenceable"]), 0)
+
+    def test_provenance_persists_session_key_without_raw_message_copy(self) -> None:
+        draft = PassiveMemoryV2Draft(
+            "偏好",
+            "我很討厭 Counter-Strike 的 Mirage",
+            0.94,
+            2,
+            domain="game",
+            subdomain="counter_strike",
+            memory_kind="preference",
+            entity_type="map",
+            entity="Mirage",
+        )
+        observation = self._observation(
+            105,
+            draft.content,
+            session_key="123:3",
+            domain="game",
+            subdomain="counter_strike",
+            topic="map",
+        )
+        store_passive_memory_v2_drafts(
+            self.database,
+            1,
+            2,
+            [draft],
+            observations=[observation],
+        )
+        row = self.database.connection.execute(
+            "SELECT id FROM user_memories WHERE guild_id = 1 AND user_id = 2"
+        ).fetchone()
+        provenance = memory_provenance_rows(self.database, 1, 2, int(row["id"]))
+        self.assertEqual(len(provenance), 1)
+        self.assertEqual(provenance[0]["session_key"], "123:3")
+
+        columns = {
+            str(item[1])
+            for item in self.database.connection.execute("PRAGMA table_info(memory_provenance)").fetchall()
+        }
+        self.assertIn("session_key", columns)
+        self.assertNotIn("content", columns)
 
     def test_reconfirmation_adds_new_provenance_without_duplicate_memory(self) -> None:
         draft = PassiveMemoryV2Draft("提醒", "我的筆電顯卡是 RTX 5070", 0.9, 2)
