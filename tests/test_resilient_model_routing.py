@@ -56,7 +56,15 @@ class ResilientModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(interactions.calls[0]["model"], "gemini-3.5-flash-lite")
 
-    async def test_search_uses_25_flash_not_default_36(self) -> None:
+    async def test_social_normalizes_persona_styled_no_reply(self) -> None:
+        interactions = _SequenceInteractions([SimpleNamespace(id="s2", output_text="NO_REPLY喵")])
+        assistant = self._assistant(interactions)
+
+        result = await assistant.social_reply("hello", persona_instruction="persona")
+
+        self.assertEqual(result, "NO_REPLY")
+
+    async def test_search_uses_current_search_route(self) -> None:
         interactions = _SequenceInteractions([SimpleNamespace(id="search-1", output_text="fresh")])
         assistant = self._assistant(interactions)
 
@@ -71,7 +79,7 @@ class ResilientModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(interaction.output_text, "fresh")
-        self.assertEqual(interactions.calls[0]["model"], "gemini-2.5-flash")
+        self.assertEqual(interactions.calls[0]["model"], "gemini-3.6-flash")
         self.assertEqual(interactions.calls[0]["tools"], [{"type": "google_search"}])
 
     async def test_model_429_falls_back_to_next_model(self) -> None:
@@ -95,6 +103,19 @@ class ResilientModelRoutingTests(unittest.IsolatedAsyncioTestCase):
             [call["model"] for call in interactions.calls],
             ["gemini-3.7-flash", "gemini-3.6-flash"],
         )
+
+    async def test_timeout_social_path_normalizes_persona_styled_no_reply(self) -> None:
+        interactions = _SequenceInteractions([SimpleNamespace(id="long-1", output_text="NO_REPLY 喵～")])
+        assistant = self._assistant(interactions)
+
+        result = await assistant.social_reply_with_timeout(
+            "passive decision",
+            persona_instruction="persona",
+            timeout_seconds=30,
+            request_kind="social-long",
+        )
+
+        self.assertEqual(result, "NO_REPLY")
 
     async def test_meeting_keeps_task_specific_timeout(self) -> None:
         interactions = _SequenceInteractions([SimpleNamespace(id="meeting-1", output_text="report")])

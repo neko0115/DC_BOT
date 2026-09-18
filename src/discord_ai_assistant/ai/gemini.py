@@ -10,6 +10,7 @@ from typing import Any
 
 from discord_ai_assistant.ai.memory import MemoryDraft, parse_memory_drafts
 from discord_ai_assistant.ai.tools import TOOL_DECLARATIONS, ToolContext, ToolRouter
+from discord_ai_assistant.character_profile import is_moxue_self_image_request
 from discord_ai_assistant.time_utils import resolve_timezone
 
 LOGGER = logging.getLogger(__name__)
@@ -20,6 +21,8 @@ LONG_CHAT_PROMPT_CHARACTER_THRESHOLD = 200
 HTTP_TIMEOUT_MARGIN_SECONDS = 5
 MEMORY_REQUEST_TIMEOUT_SECONDS = 120
 GOOGLE_SEARCH_TOOL = {"type": "google_search"}
+EXTERNAL_WEB_TOOL_PREFIX = "x_web_research_"
+EXTERNAL_IMAGE_TOOL_NAME = "x_image_generation_generate_image"
 MUSIC_TOOL_KEYWORDS = ("播放", "放歌", "點歌", "插歌", "佇列", "下一首", "播放清單", "音樂庫", "youtube")
 SEARCH_TOOL_KEYWORDS = (
     "推薦",
@@ -109,11 +112,14 @@ class GeminiAssistant:
         client = self._get_client()
         await self.router.refresh_external_tools()
         request_text = self._request_text(prompt)
-        tools = self._tools_for_request(prompt)
-        tools.extend(self.router.external_declarations_for(request_text, context))
+        native_tools = self._tools_for_request(prompt)
+        external_tools = self.router.external_declarations_for(request_text, context)
+        if self._has_external_web_tool(external_tools):
+            native_tools = [tool for tool in native_tools if tool.get("type") != "google_search"]
+        tools = [*native_tools, *external_tools]
         tool_instruction = (
             "You may only request actions through the supplied tools. "
-            "Use Google Search when a current recommendation, event, product, release, or other fresh web information would improve the answer. "
+            "Use an available web capability when a current recommendation, event, product, release, or other fresh public information would improve the answer. "
             "When web sources are available, include their URLs in a concise source list. "
             "If a tool result contains summary_instruction, follow it using only the returned transcript/events and do not invent missing facts. "
             if tools
@@ -163,7 +169,8 @@ class GeminiAssistant:
         effects: list[dict[str, object]] = []
         for call in calls:
             try:
-                result = await self.router.execute(call.name, dict(call.arguments), context)
+                arguments = self._tool_arguments_for_request(call.name, dict(call.arguments), request_text)
+                result = await self.router.execute(call.name, arguments, context)
             except (TypeError, ValueError) as error:
                 result = {"message": f"無法執行操作：{error}"}
             clean_result = dict(result)
@@ -262,6 +269,26 @@ class GeminiAssistant:
         if any(keyword in request_text for keyword in MUSIC_TOOL_KEYWORDS):
             tools.extend(TOOL_DECLARATIONS)
         return tools
+
+    @staticmethod
+    def _tool_arguments_for_request(
+        name: str,
+        arguments: dict[str, object],
+        request_text: str,
+    ) -> dict[str, object]:
+        prepared = dict(arguments)
+        if name == EXTERNAL_IMAGE_TOOL_NAME and is_moxue_self_image_request(request_text):
+            prepared["use_moxue_appearance"] = True
+        return prepared
+
+    @staticmethod
+    def _has_external_web_tool(tools: list[dict[str, object]]) -> bool:
+        return any(
+            tool.get("type") == "function"
+            and isinstance(tool.get("name"), str)
+            and tool["name"].startswith(EXTERNAL_WEB_TOOL_PREFIX)
+            for tool in tools
+        )
 
     @staticmethod
     def _chat_timeout_seconds(request_text: str) -> int:

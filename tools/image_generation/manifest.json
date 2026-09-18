@@ -1,0 +1,24 @@
+{
+  "name": "image_generation",
+  "version": "0.2.0",
+  "description": "Generate an image with Cloudflare Workers AI FLUX only when the user explicitly asks for an image.",
+  "enabled": true,
+  "entrypoint": "tool.py",
+  "trigger_keywords": ["生圖", "生成圖片", "產生圖片", "幫我畫", "畫一張", "做張圖"],
+  "always_available": false,
+  "actions": {
+    "generate_image": {
+      "description": "Generate one image from a text prompt with Cloudflare Workers AI. Use only when the user explicitly asks to create or draw an image; never call this proactively. If the requested subject is 墨雪/墨染雪/Nyxie or the assistant herself, set use_moxue_appearance=true so the canonical character design is enforced.",
+      "requires_dj": false,
+      "trigger_keywords": ["生圖", "生成圖片", "產生圖片", "幫我畫", "畫一張", "做張圖"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "prompt": {"type": "string", "description": "A self-contained image description, maximum 2048 characters. Preserve the user's requested subject, composition, style, text, and constraints."},
+          "use_moxue_appearance": {"type": "boolean", "description": "Set true when the image depicts 墨雪、墨染雪、Nyxie or the assistant herself. The tool will append the canonical appearance, including exactly two nekomata tails."}
+        },
+        "required": ["prompt"]
+      }
+    }
+  }
+}

@@ -12,6 +12,7 @@ from discord_ai_assistant.agent import AgentCoordinator, AgentEvent, AgentEventB
 from discord_ai_assistant.agent.bridge import AgentEventBridge
 from discord_ai_assistant.ai.evented_tools import EventedToolRouter
 from discord_ai_assistant.ai.resilient_gemini import ResilientGeminiAssistant
+from discord_ai_assistant.artifact_tool_effect_commands import ArtifactToolEffectAssistantCommands
 from discord_ai_assistant.capture_agent.slash import install_capture_agent_commands
 from discord_ai_assistant.capture_hub import CaptureHubServer
 from discord_ai_assistant.commands import AssistantCommands
@@ -26,7 +27,6 @@ from discord_ai_assistant.music.library import LibraryService
 from discord_ai_assistant.music.player import configure_event_loop
 from discord_ai_assistant.slash_groups import GroupedSlashCommands, remove_grouped_legacy_commands
 from discord_ai_assistant.storage.agent_database import AgentDatabase
-from discord_ai_assistant.tool_effect_commands import ToolEffectAssistantCommands
 from discord_ai_assistant.tool_gateway.client import ToolGatewayClient
 from discord_ai_assistant.tool_gateway.server import ToolGatewayServer
 from discord_ai_assistant.voice.playback_watchdog import VoicePlaybackWatchdog
@@ -111,7 +111,7 @@ class AssistantBot(commands.Bot):
         if self.capture_hub_server is not None:
             await self.capture_hub_server.start()
 
-        core_commands = ToolEffectAssistantCommands(
+        core_commands = ArtifactToolEffectAssistantCommands(
             self, self.settings, self.database, self.library, self.music, self.ai
         )
         legacy_speech = ResilientWindowsSpeechSynthesizer(

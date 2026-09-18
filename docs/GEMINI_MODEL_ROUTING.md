@@ -19,15 +19,19 @@ Do not hard-code public RPM/TPM/RPD guesses into the bot. Check the project's ac
 | Passive social | `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemma-4-26b-a4b-it` |
 | Memory extraction | `gemini-3.1-flash-lite` → `gemini-3.5-flash-lite` → `gemma-4-26b-a4b-it` |
 | Meeting reports | `gemini-3.7-flash` → `gemini-3.6-flash` → `gemini-3.5-flash` → `gemini-2.5-pro` → `gemma-4-31b-it` |
-| Free-tier Search | `gemini-2.5-flash` → `gemini-2.5-flash-lite` |
+| Search | `gemini-3.6-flash` → `gemini-3.5-flash-lite` |
 
 The meeting workload preserves the existing 240-second task timeout and meeting revision recovery behavior.
 
 ## Search boundary
 
-Free-tier Google Search is deliberately isolated to the Gemini 2.5 Flash family. Gemini 3.x free token inference does not imply free Search grounding. The 2.5 Flash and Flash-Lite Search allowance is a shared pool, so an explicit shared Search quota error blocks the Search workload instead of repeatedly cycling between models.
+Search routing is explicit and configurable through `GEMINI_MODELS_SEARCH`. It is intentionally excluded from the legacy `GEMINI_MODEL` fallback so a general chat-model setting cannot silently change the Search route. Google can retire or change Search-capable model IDs over time, so the application no longer hard-locks Search to the retired Gemini 2.5 Flash family.
 
-Search-only proactive assistance continues to expose only Google Search and no Discord/music/meeting/memory actions.
+Search-only proactive assistance continues to expose only Google Search and no Discord/music/meeting/memory actions. If the configured Search route is unavailable or quota-blocked, proactive Search fails closed instead of inventing current facts.
+
+## Passive no-reply control
+
+Passive social and proactive knowledge-help prompts use `NO_REPLY` as an internal control value. The runtime normalizes harmless persona decoration such as `NO_REPLY喵` back to the exact sentinel before publication so control text is never shown as a Discord response. Search-only responses perform the same normalization after citation formatting, preventing a sentinel followed by source metadata from leaking to Discord.
 
 ## Failure behavior
 

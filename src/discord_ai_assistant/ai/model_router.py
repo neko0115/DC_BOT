@@ -76,11 +76,12 @@ DEFAULT_MODEL_ROUTES: dict[str, tuple[str, ...]] = {
         "gemini-2.5-pro",
         "gemma-4-31b-it",
     ),
-    # Google currently exposes free Search grounding for the 2.5 Flash family.
-    # Free Gemini 3.x token inference is separate from its paid Search grounding.
+    # Search uses the currently available Interactions API models. Google may change
+    # Search eligibility by project/model over time, so keep this chain configurable
+    # instead of hard-locking it to a retired model family.
     WORKLOAD_SEARCH: (
-        "gemini-2.5-flash",
-        "gemini-2.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
     ),
 }
 
@@ -95,7 +96,6 @@ ENV_BY_WORKLOAD = {
     WORKLOAD_SEARCH: "GEMINI_MODELS_SEARCH",
 }
 
-FREE_SEARCH_MODELS = {"gemini-2.5-flash", "gemini-2.5-flash-lite"}
 MODEL_QUOTA_COOLDOWN_SECONDS = 15 * 60
 MODEL_TRANSIENT_COOLDOWN_SECONDS = 30
 MAX_INTERACTION_MODEL_PINS = 2048
@@ -160,23 +160,16 @@ def parse_model_chain(value: str | None, default: tuple[str, ...]) -> tuple[str,
 def load_model_routes(legacy_model: str | None = None) -> dict[str, tuple[str, ...]]:
     """Load per-workload routes while retaining GEMINI_MODEL as a last-resort fallback.
 
-    Search is intentionally excluded from the legacy fallback because a Gemini 3.x
-    `GEMINI_MODEL` must not silently turn a free-tier Search request into an unsupported
-    route. Search can only be overridden with the two free 2.5 Flash model IDs.
+    Search is intentionally excluded from the legacy fallback so an unrelated
+    ``GEMINI_MODEL`` cannot silently change its capability route. Override Search
+    explicitly with ``GEMINI_MODELS_SEARCH`` when a project needs a different chain.
     """
 
     legacy = (legacy_model or "").strip()
     routes: dict[str, tuple[str, ...]] = {}
     for workload, default in DEFAULT_MODEL_ROUTES.items():
         chain = parse_model_chain(os.getenv(ENV_BY_WORKLOAD[workload]), default)
-        if workload == WORKLOAD_SEARCH:
-            unsupported = tuple(model for model in chain if model not in FREE_SEARCH_MODELS)
-            if unsupported:
-                raise ValueError(
-                    "GEMINI_MODELS_SEARCH only accepts free-tier Search models: "
-                    + ", ".join(sorted(FREE_SEARCH_MODELS))
-                )
-        elif legacy and legacy not in chain:
+        if workload != WORKLOAD_SEARCH and legacy and legacy not in chain:
             chain = (*chain, legacy)
         routes[workload] = chain
     return routes
@@ -405,5 +398,5 @@ class GeminiModelRouter:
 
     def unavailable_message(self, workload: str) -> str:
         if workload == WORKLOAD_SEARCH:
-            return "Gemini 免費搜尋額度目前不可用，請稍後再試。"
+            return "Gemini 搜尋目前不可用，請稍後再試。"
         return "目前這類工作可用的 Gemini 模型都在冷卻或暫時不可用，請稍後再試。"

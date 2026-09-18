@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from discord_ai_assistant.ai.control_response import normalize_control_response
 from discord_ai_assistant.ai.gemini import (
     GOOGLE_SEARCH_TOOL,
     TOOL_REQUEST_TIMEOUT_SECONDS,
@@ -41,4 +42,4 @@ async def search_only_social_reply(
         request_kind="social-search",
         input_characters=len(prompt),
     )
-    return ai._format_response(interaction, "")
+    return normalize_control_response(ai._format_response(interaction, ""))

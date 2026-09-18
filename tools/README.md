@@ -103,6 +103,34 @@ ToolRouter 會把這兩個 metadata 轉成核心內部的 `publish_final_reply` 
 
 若 `summary_channel_id` 為 `null`、無效值，或缺少 `summary_instruction`，就不會跨頻道發布，最後回覆留在原本的對話頻道。
 
+## Tool 產物附件
+
+外接工具若需要把本機產物交給 Discord，不得直接取得 Discord Token，也不得把大型 Base64 塞回 Gemini。工具可把檔案寫到：
+
+```text
+data/tool-artifacts/<tool-or-purpose>/
+```
+
+並在 result 中回傳保留欄位 `_moxue_artifacts`：
+
+```json
+{
+  "message": "產物已建立。",
+  "_moxue_artifacts": [
+    {
+      "relative_path": "image_generation/abc123.jpg",
+      "filename": "generated.jpg",
+      "mime_type": "image/jpeg",
+      "delete_after_send": true
+    }
+  ]
+}
+```
+
+`ToolRouter` 會先移除 `_moxue_artifacts`，只把受限 descriptor 轉成核心 `attach_artifact` effect，因此檔案路徑與大型二進位資料不會進 Gemini context。外接工具若直接回傳 `_moxue_effects`，該欄位會被丟棄，不能自行注入核心 side effect。
+
+Discord Core 仍會再次驗證 artifact root containment、`..`、symlink、MIME/副檔名與檔案大小。目前只允許 JPEG、PNG、WebP 圖片，單一檔案上限為伺服器上傳限制與 10 MiB 兩者較小值；合法且 `delete_after_send=true` 的產物在 Discord 發送嘗試後會清理。
+
 ## HTTP API
 
 預設：`http://127.0.0.1:8765`

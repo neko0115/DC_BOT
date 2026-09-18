@@ -24,6 +24,21 @@ class GeminiResponseTests(unittest.TestCase):
 
         self.assertEqual(tools, [{"type": "google_search"}])
 
+    def test_self_image_request_forces_canonical_appearance_flag(self) -> None:
+        arguments = GeminiAssistant._tool_arguments_for_request(
+            "x_image_generation_generate_image",
+            {"prompt": "用尾巴比愛心"},
+            "畫一張你自己用尾巴比愛心",
+        )
+        self.assertTrue(arguments["use_moxue_appearance"])
+
+        generic = GeminiAssistant._tool_arguments_for_request(
+            "x_image_generation_generate_image",
+            {"prompt": "一隻普通白貓"},
+            "幫我畫一隻普通白貓",
+        )
+        self.assertNotIn("use_moxue_appearance", generic)
+
     def test_long_chat_questions_receive_a_longer_timeout(self) -> None:
         self.assertEqual(GeminiAssistant._chat_timeout_seconds("問題" * 101), 150)
         self.assertEqual(GeminiAssistant._chat_timeout_seconds("短問題"), 120)

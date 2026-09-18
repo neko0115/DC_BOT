@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from urllib.parse import quote_plus
 
 import discord
@@ -12,6 +13,9 @@ from discord_ai_assistant.storage.database import Database
 from discord_ai_assistant.tool_gateway.client import ToolGatewayClient, ToolGatewayUnavailable
 
 LOGGER = logging.getLogger(__name__)
+MAX_EXTERNAL_ARTIFACTS = 4
+MAX_ARTIFACT_RELATIVE_PATH = 512
+MAX_ARTIFACT_FILENAME = 180
 
 TOOL_DECLARATIONS = [
     {
@@ -111,8 +115,56 @@ class ToolRouter:
         return {"message": "此操作不在允許清單內。"}
 
     @staticmethod
-    def _attach_external_effects(result: dict[str, object]) -> dict[str, object]:
-        """Translate opt-in external-tool result metadata into core-owned Discord effects."""
+    def _artifact_effect(item: object) -> dict[str, object] | None:
+        if not isinstance(item, dict):
+            return None
+        relative_path = item.get("relative_path")
+        if (
+            not isinstance(relative_path, str)
+            or not relative_path
+            or len(relative_path) > MAX_ARTIFACT_RELATIVE_PATH
+            or "\x00" in relative_path
+        ):
+            return None
+        path = PurePosixPath(relative_path.replace("\\", "/"))
+        if path.is_absolute() or ".." in path.parts or not path.parts:
+            return None
+        mime_type = item.get("mime_type")
+        if not isinstance(mime_type, str) or not mime_type or len(mime_type) > 100:
+            return None
+        filename = item.get("filename")
+        if not isinstance(filename, str) or not filename.strip():
+            filename = path.name
+        filename = PurePosixPath(filename.replace("\\", "/")).name[:MAX_ARTIFACT_FILENAME]
+        if not filename:
+            return None
+        delete_after_send = item.get("delete_after_send", True)
+        if not isinstance(delete_after_send, bool):
+            delete_after_send = True
+        return {
+            "type": "attach_artifact",
+            "relative_path": str(path),
+            "filename": filename,
+            "mime_type": mime_type,
+            "delete_after_send": delete_after_send,
+        }
+
+    @classmethod
+    def _attach_external_effects(cls, result: dict[str, object]) -> dict[str, object]:
+        """Translate whitelisted plugin metadata into core-owned effects."""
+        result = dict(result)
+        # External plugins may request only the metadata translations below. They
+        # cannot inject arbitrary internal effects directly.
+        result.pop("_moxue_effects", None)
+        effects: list[dict[str, object]] = []
+
+        raw_artifacts = result.pop("_moxue_artifacts", None)
+        if isinstance(raw_artifacts, list):
+            for item in raw_artifacts[:MAX_EXTERNAL_ARTIFACTS]:
+                effect = cls._artifact_effect(item)
+                if effect is not None:
+                    effects.append(effect)
+
         channel_id = result.get("summary_channel_id")
         summary_instruction = result.get("summary_instruction")
         if (
@@ -121,14 +173,15 @@ class ToolRouter:
             and isinstance(summary_instruction, str)
             and summary_instruction.strip()
         ):
-            result = dict(result)
-            result["_moxue_effects"] = [
+            effects.append(
                 {
                     "type": "publish_final_reply",
                     "channel_id": channel_id,
                     "suppress_origin": True,
                 }
-            ]
+            )
+        if effects:
+            result["_moxue_effects"] = effects
         return result
 
     async def _queue_library_track(

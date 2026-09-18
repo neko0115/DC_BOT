@@ -31,6 +31,34 @@ class ToolEffectTests(unittest.TestCase):
         )
         self.assertNotIn("_moxue_effects", result)
 
+    def test_artifact_metadata_becomes_core_owned_effect_and_is_hidden_from_model(self) -> None:
+        result = ToolRouter._attach_external_effects(
+            {
+                "message": "done",
+                "_moxue_artifacts": [
+                    {
+                        "relative_path": "image_generation/abc.jpg",
+                        "filename": "generated.jpg",
+                        "mime_type": "image/jpeg",
+                        "delete_after_send": True,
+                    }
+                ],
+            }
+        )
+        self.assertNotIn("_moxue_artifacts", result)
+        self.assertEqual(
+            result["_moxue_effects"],
+            [
+                {
+                    "type": "attach_artifact",
+                    "relative_path": "image_generation/abc.jpg",
+                    "filename": "generated.jpg",
+                    "mime_type": "image/jpeg",
+                    "delete_after_send": True,
+                }
+            ],
+        )
+
     def test_assistant_reply_effects_default_to_empty(self) -> None:
         reply = AssistantReply("hello", used_tools=False)
         self.assertEqual(reply.effects, ())

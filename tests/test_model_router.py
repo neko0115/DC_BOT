@@ -30,25 +30,28 @@ class _GeminiError(RuntimeError):
 
 
 class ModelRouterTests(unittest.TestCase):
-    def test_default_routes_keep_search_on_free_25_models(self) -> None:
+    def test_default_routes_use_current_search_models(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             routes = load_model_routes("gemini-3.6-flash")
         self.assertEqual(
             routes[WORKLOAD_SEARCH],
-            ("gemini-2.5-flash", "gemini-2.5-flash-lite"),
+            ("gemini-3.6-flash", "gemini-3.5-flash-lite"),
         )
         self.assertEqual(routes[WORKLOAD_SOCIAL][0], "gemini-3.5-flash-lite")
         self.assertEqual(routes[WORKLOAD_MEMORY][0], "gemini-3.1-flash-lite")
         self.assertEqual(routes[WORKLOAD_MEETING][0], "gemini-3.7-flash")
 
-    def test_search_override_rejects_gemini_3x(self) -> None:
+    def test_search_override_accepts_explicit_model_chain(self) -> None:
         with patch.dict(
             os.environ,
-            {"GEMINI_MODELS_SEARCH": "gemini-3.6-flash,gemini-2.5-flash"},
+            {"GEMINI_MODELS_SEARCH": "gemini-3.7-flash,gemini-3.6-flash"},
             clear=True,
         ):
-            with self.assertRaises(ValueError):
-                load_model_routes("gemini-3.6-flash")
+            routes = load_model_routes("gemini-3.6-flash")
+        self.assertEqual(
+            routes[WORKLOAD_SEARCH],
+            ("gemini-3.7-flash", "gemini-3.6-flash"),
+        )
 
     def test_custom_chat_chain_retains_legacy_model_as_last_resort(self) -> None:
         with patch.dict(
@@ -109,7 +112,7 @@ class ModelRouterTests(unittest.TestCase):
             WORKLOAD_MEETING,
             WORKLOAD_SEARCH,
         )}
-        routes[WORKLOAD_SEARCH] = ("gemini-2.5-flash", "gemini-2.5-flash-lite")
+        routes[WORKLOAD_SEARCH] = ("gemini-3.6-flash", "gemini-3.5-flash-lite")
         router = GeminiModelRouter(routes, quota_cooldown_seconds=60)
         router.mark_failure(WORKLOAD_CHAT, "model-a", _GeminiError("RESOURCE_EXHAUSTED", 429))
         self.assertEqual(router.candidate_models(WORKLOAD_CHAT), ("model-b",))
@@ -123,12 +126,12 @@ class ModelRouterTests(unittest.TestCase):
             ("gemini-3.7-flash",),
         )
 
-    def test_shared_search_quota_blocks_both_25_search_models(self) -> None:
+    def test_shared_search_quota_blocks_current_search_route(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             router = GeminiModelRouter(load_model_routes("gemini-3.6-flash"), quota_cooldown_seconds=60)
         blocked = router.mark_failure(
             WORKLOAD_SEARCH,
-            "gemini-2.5-flash",
+            "gemini-3.6-flash",
             _GeminiError("RESOURCE_EXHAUSTED Google Search grounding quota per day", 429),
         )
         self.assertTrue(blocked)

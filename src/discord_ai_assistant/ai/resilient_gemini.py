@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from discord_ai_assistant.ai.control_response import normalize_control_response
 from discord_ai_assistant.ai.gemini import GeminiAssistant, GeminiRequestError
 from discord_ai_assistant.ai.key_pool import FailoverGeminiClient, load_gemini_api_keys
 from discord_ai_assistant.ai.model_router import (
@@ -126,6 +127,11 @@ class ResilientGeminiAssistant(GeminiAssistant):
 
         raise GeminiRequestError(self.model_router.unavailable_message(workload))
 
+    async def social_reply(self, prompt: str, *, persona_instruction: str) -> str:
+        """Normalize internal passive-control values after the normal social request."""
+        reply = await super().social_reply(prompt, persona_instruction=persona_instruction)
+        return normalize_control_response(reply)
+
     async def social_reply_with_timeout(
         self,
         prompt: str,
@@ -157,4 +163,4 @@ class ResilientGeminiAssistant(GeminiAssistant):
             request_kind=request_kind,
             input_characters=len(prompt),
         )
-        return interaction.output_text or ""
+        return normalize_control_response(interaction.output_text or "")
