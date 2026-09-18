@@ -23,6 +23,38 @@ _KEY_FAILURE_MARKERS = (
 DEFAULT_QUOTA_COOLDOWN_SECONDS = 15 * 60
 
 
+def _create_single_attempt_sdk_client(api_key: str) -> Any:
+    """Build an isolated Interactions client; unknown retry APIs fail closed.
+
+    google-genai 2.22.0 still retries once with public attempts=0. Its generated
+    Interactions resource explicitly treats retry_config=None as no retries.
+    Initialize and validate that seam before returning this dedicated client;
+    never change the ordinary client's options or SDK module globals.
+    """
+    from google import genai
+    from google.genai import types
+
+    client = None
+    try:
+        client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
+            retry_options=types.HttpRetryOptions(attempts=0),
+        ))
+        configuration = client.interactions.sdk_configuration
+        retry = configuration.retry_config
+        if (getattr(retry, "strategy", None) != "attempt-count-backoff"
+                or type(getattr(retry, "max_retries", None)) is not int):
+            raise RuntimeError("Unsupported Interactions retry configuration")
+        configuration.retry_config = None
+        if client.interactions.sdk_configuration.retry_config is not None:
+            raise RuntimeError("Interactions retry configuration was not applied")
+        return client
+    except Exception:
+        if client is not None:
+            client.close()
+        # The explicit one-attempt caller owns the single bounded diagnostic.
+        raise RuntimeError("Public Term single-attempt SDK unavailable") from None
+
+
 def load_gemini_api_keys(primary: str | None = None) -> tuple[str, ...]:
     """Load the primary Gemini key plus optional backup keys without duplicates.
 
@@ -138,14 +170,40 @@ class _FailoverInteractions:
         self,
         pool: GeminiKeyPool,
         client_factory: Callable[[str], Any],
+        single_attempt_client_factory: Callable[[str], Any],
     ) -> None:
         self.pool = pool
         self.client_factory = client_factory
         self._clients: dict[int, Any] = {}
+        self._single_attempt_client_factory = single_attempt_client_factory
+        self._single_attempt_clients: dict[int, Any] = {}
+        self._single_attempt_lock = threading.Lock()
         # A previous_interaction_id can be scoped to the project/key that created it.
         # Pin continuations to the originating key so backups from another project are
         # never asked to resume an interaction they do not own.
         self._interaction_keys: dict[str, int] = {}
+
+    def create_once(self, **kwargs: object) -> Any:
+        """Try one current key; failure state only affects subsequent requests."""
+        previous_id = kwargs.get("previous_interaction_id")
+        pinned_index = self._interaction_keys.get(previous_id) if isinstance(previous_id, str) else None
+        index = pinned_index if pinned_index is not None else self.pool.candidate_indexes()[0]
+        with self._single_attempt_lock:
+            client = self._single_attempt_clients.get(index)
+            if client is None:
+                client = self._single_attempt_client_factory(self.pool.keys[index])
+                self._single_attempt_clients[index] = client
+        try:
+            result = client.interactions.create(**kwargs)
+        except Exception as error:
+            if is_gemini_key_failure(error):
+                self.pool.mark_failure(index, error)
+            raise
+        interaction_id = getattr(result, "id", None)
+        if isinstance(interaction_id, str) and interaction_id:
+            self._interaction_keys[interaction_id] = index
+        self.pool.mark_success(index)
+        return result
 
     def create(self, **kwargs: object) -> Any:
         previous_id = kwargs.get("previous_interaction_id")
@@ -194,6 +252,7 @@ class FailoverGeminiClient:
         keys: Sequence[str],
         *,
         client_factory: Callable[[str], Any] | None = None,
+        single_attempt_client_factory: Callable[[str], Any] | None = None,
         quota_cooldown_seconds: float = DEFAULT_QUOTA_COOLDOWN_SECONDS,
     ) -> None:
         if client_factory is None:
@@ -201,4 +260,7 @@ class FailoverGeminiClient:
 
             client_factory = lambda key: genai.Client(api_key=key)
         self.key_pool = GeminiKeyPool(keys, quota_cooldown_seconds=quota_cooldown_seconds)
-        self.interactions = _FailoverInteractions(self.key_pool, client_factory)
+        self.interactions = _FailoverInteractions(
+            self.key_pool, client_factory,
+            single_attempt_client_factory or _create_single_attempt_sdk_client,
+        )

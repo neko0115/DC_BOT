@@ -83,6 +83,8 @@ FRESHNESS_DEPENDENT_KEYWORDS = (
 )
 
 FRESHNESS_DEPENDENT_PATTERNS = (
+    # Require an event predicate, not an update/release noun in a static definition.
+    re.compile(r"(?:今天|目前|現在|最近)[^。！？!?；;]{0,12}(?:更新|發布|發佈|釋出)了"),
     re.compile(r"(?:班車|火車|公車|客運|高鐵|台鐵|捷運|航班|飛機).{0,16}(?:幾點|時間|班次|時刻)"),
     re.compile(r"(?:店|餐廳|商店|場館|景點|銀行|郵局).{0,16}(?:幾點|營業|開門|關門|有開)"),
     re.compile(r"(?:下一個|這個|目前|現在|今天|明天|最近).{0,12}(?:颱風|台風|typhoon)"),

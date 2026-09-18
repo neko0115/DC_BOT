@@ -4,6 +4,13 @@ from discord_ai_assistant import __version__
 
 
 RELEASE_NOTES: dict[str, tuple[str, ...]] = {
+    "0.7.0": (
+        "首次公開原始碼版本，整理公開安裝、隱私、安全與第三方依賴文件。",
+        "整合 Memory V2 與 Chat Style，提供個人記憶、聊天風格學習、重設與隱私控制。",
+        "加入 Knowledge Enrichment、共用詞彙與受限制的公開術語查詢流程。",
+        "整合會議流程、Capture Agent、分散式 TTS 與 GPT-SoVITS worker 邊界。",
+        "加入 Tool Gateway、網頁研究、圖片生成與其他受控工具整合。",
+    ),
     "0.6.1": (
         "新增被動記憶整理：墨雪會低頻批次整理明確的偏好、習慣、興趣與長期專案。",
         "每位使用者可用 /memory_passive 開關；一般閒聊、短句、連結與敏感資料會被略過。",

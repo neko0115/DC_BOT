@@ -41,6 +41,45 @@ class _SequenceInteractions:
 
 
 class GeminiKeyPoolTests(unittest.TestCase):
+    def test_create_once_defers_key_failover_until_next_request(self) -> None:
+        first = _Interactions(error=_GeminiError('SYNTHETIC', 429))
+        result = SimpleNamespace(id='backup-once', output_text='ok')
+        second = _Interactions(result=result)
+        clients = {'primary': SimpleNamespace(interactions=first), 'backup': SimpleNamespace(interactions=second)}
+        client = FailoverGeminiClient(('primary', 'backup'), client_factory=lambda key: clients[key],
+                                      single_attempt_client_factory=lambda key: clients[key])
+        with self.assertRaises(_GeminiError):
+            client.interactions.create_once(model='test')
+        self.assertEqual((first.calls, second.calls), (1, 0))
+        self.assertEqual(client.key_pool.active_number, 2)
+        self.assertIs(client.interactions.create_once(model='test'), result)
+        self.assertEqual((first.calls, second.calls), (1, 1))
+
+    def test_create_once_keeps_continuations_on_the_successful_key(self) -> None:
+        first_result = SimpleNamespace(id='once-pinned', output_text='ok')
+        first = _SequenceInteractions([first_result, _GeminiError('SYNTHETIC', 429)])
+        backup = _Interactions(result=SimpleNamespace(id='next', output_text='ok'))
+        clients = {'primary': SimpleNamespace(interactions=first), 'backup': SimpleNamespace(interactions=backup)}
+        client = FailoverGeminiClient(('primary', 'backup'), client_factory=lambda key: clients[key],
+                                      single_attempt_client_factory=lambda key: clients[key])
+        self.assertIs(client.interactions.create_once(model='test'), first_result)
+        with self.assertRaises(_GeminiError):
+            client.interactions.create_once(model='test', previous_interaction_id='once-pinned')
+        self.assertEqual((first.calls, backup.calls), (2, 0))
+        self.assertEqual(client.interactions.create(model='test').id, 'next')
+        self.assertEqual((first.calls, backup.calls), (2, 1))
+
+    def test_create_once_does_not_rotate_key_on_server_error(self) -> None:
+        first = _Interactions(error=_GeminiError('SYNTHETIC', 503))
+        second = _Interactions(result=SimpleNamespace(output_text='unused'))
+        clients = {'primary': SimpleNamespace(interactions=first), 'backup': SimpleNamespace(interactions=second)}
+        client = FailoverGeminiClient(('primary', 'backup'), client_factory=lambda key: clients[key],
+                                      single_attempt_client_factory=lambda key: clients[key])
+        with self.assertRaises(_GeminiError):
+            client.interactions.create_once(model='test')
+        self.assertEqual((first.calls, second.calls), (1, 0))
+        self.assertEqual(client.key_pool.active_number, 1)
+
     def test_loads_primary_csv_and_numbered_keys_without_duplicates(self) -> None:
         environment = {
             "GEMINI_API_KEY": "primary",

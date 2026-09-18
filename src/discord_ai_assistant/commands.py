@@ -831,6 +831,7 @@ class AssistantCommands(commands.Cog):
             interaction.user,
             self._with_history(prompt, interaction.guild.id, interaction.channel_id or message.channel.id),
             image,
+            raw_user_request=None,  # Application analysis instruction; referenced text is data.
         )
         try:
             await interaction.edit_original_response(content=reply[:2000])
@@ -868,7 +869,10 @@ class AssistantCommands(commands.Cog):
         member = message.author if isinstance(message.author, discord.Member) else None
         if not member:
             return
-        prompt = message.content.replace(self.bot.user.mention, "").strip() or "請回覆這段對話。"
+        # Remove only our mention and its surrounding spaces; keep controls and
+        # all other source syntax for the dedicated lookup's privacy checks.
+        raw_user_request = re.sub(rf"<@!?{self.bot.user.id}>", "", message.content).strip(" ")
+        prompt = raw_user_request.strip() or "請回覆這段對話。"
         try:
             referenced_message = await self._referenced_message(message)
         except Exception:
@@ -888,6 +892,7 @@ class AssistantCommands(commands.Cog):
             member,
             enriched_prompt,
             image,
+            raw_user_request=raw_user_request,
         )
         await message.reply(reply[:2000], mention_author=False)
 
@@ -998,6 +1003,7 @@ class AssistantCommands(commands.Cog):
             member,
             self._with_history(prompt, interaction.guild.id, interaction.channel_id or 0),
             image,
+            raw_user_request=prompt,
         )
 
     async def _ask_gemini(
@@ -1007,6 +1013,8 @@ class AssistantCommands(commands.Cog):
         member: discord.Member,
         prompt: str,
         image: discord.Attachment | None,
+        *,
+        raw_user_request: str | None = None,
     ) -> str:
         try:
             self.database.record_user_ai_request(guild_id, member.id)

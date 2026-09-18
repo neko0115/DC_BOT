@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -254,9 +255,116 @@ def is_unified_passive_memory_candidate(content: str) -> bool:
 is_extended_passive_memory_candidate = is_unified_passive_memory_candidate
 
 
+_PERSONAL_PHONE_CANDIDATE = re.compile(r"(?:\+[ \t.-]*)?\d(?:[\d \t().-]*\d)?")
+_PERSONAL_PHONE_IDENTITY = re.compile(r"(?:09\d{8}|(?:\+|00)8860?9\d{8})")
+_PERSONAL_ADDRESS_SHAPE = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff]{2,24}(?:路|街|大道)\s*"
+    r"(?:[0-9一二三四五六七八九十百千零〇兩两]+\s*(?:段|巷|弄)\s*)*"
+    r"[0-9一二三四五六七八九十百千零〇兩两]+"
+    r"(?:\s*(?:之|-)\s*[0-9一二三四五六七八九十百千零〇兩两]+)?\s*[號号]"
+)
+_ADDRESS_NEIGHBORHOOD_TOKEN = re.compile(
+    r"(?:第\s*)?[0-9一二三四五六七八九十百千零〇兩两]+\s*[鄰邻]\s*"
+)
+_ADDRESS_HOUSE_TOKEN = re.compile(
+    r"[0-9一二三四五六七八九十百千零〇兩两]+"
+    r"(?:\s*(?:之|-)\s*[0-9一二三四五六七八九十百千零〇兩两]+)?\s*[號号]"
+)
+_ADMIN_LOCALITY_SUFFIX_CHARACTERS = frozenset("鄉乡鎮镇市區区")
+_ADMIN_VILLAGE_SUFFIX_CHARACTERS = frozenset("村里")
+_ADMIN_SUFFIX_CHARACTERS = frozenset("縣县市鄉乡鎮镇區区村里")
+
+
+def _normalize_sensitive_data_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text)
+    return "".join(
+        "-" if unicodedata.category(char) == "Pd" else char
+        for char in normalized
+    )
+
+
+def _is_admin_name_character(char: str) -> bool:
+    return "\u3400" <= char <= "\u4dbf" or "\u4e00" <= char <= "\u9fff"
+
+
+def _skip_address_whitespace(normalized: str, cursor: int) -> int:
+    while cursor < len(normalized) and normalized[cursor].isspace():
+        cursor += 1
+    return cursor
+
+
+def _admin_component_candidates(
+    normalized: str, start: int, suffixes: frozenset[str],
+) -> Iterable[tuple[str, int]]:
+    name: list[str] = []
+    cursor = start
+    while cursor < len(normalized):
+        char = normalized[cursor]
+        if _is_admin_name_character(char):
+            if name and char in suffixes:
+                yield "".join(name), _skip_address_whitespace(normalized, cursor + 1)
+            if len(name) == 24:
+                return
+            name.append(char)
+            cursor += 1
+            continue
+        if char.isspace() and name:
+            suffix_cursor = _skip_address_whitespace(normalized, cursor)
+            if suffix_cursor < len(normalized) and normalized[suffix_cursor] in suffixes:
+                yield "".join(name), _skip_address_whitespace(normalized, suffix_cursor + 1)
+        return
+
+
+def _looks_like_administrative_address(normalized: str) -> bool:
+    for start, char in enumerate(normalized):
+        if not _is_admin_name_character(char):
+            continue
+        for locality_name, village_start in _admin_component_candidates(
+            normalized, start, _ADMIN_LOCALITY_SUFFIX_CHARACTERS,
+        ):
+            if set(locality_name) <= _ADMIN_SUFFIX_CHARACTERS:
+                continue
+            for village_name, cursor in _admin_component_candidates(
+                normalized, village_start, _ADMIN_VILLAGE_SUFFIX_CHARACTERS,
+            ):
+                if set(village_name) <= _ADMIN_SUFFIX_CHARACTERS:
+                    continue
+                neighborhood = _ADDRESS_NEIGHBORHOOD_TOKEN.match(normalized, cursor)
+                if neighborhood is not None:
+                    cursor = neighborhood.end()
+                if _ADDRESS_HOUSE_TOKEN.match(normalized, cursor) is not None:
+                    return True
+    return False
+
+
+def _looks_like_private_address_normalized(normalized: str) -> bool:
+    normalized = " ".join(normalized.split())
+    return (
+        _PERSONAL_ADDRESS_SHAPE.search(normalized) is not None
+        or _looks_like_administrative_address(normalized)
+    )
+
+
+def looks_like_private_address(text: str) -> bool:
+    return _looks_like_private_address_normalized(_normalize_sensitive_data_text(text))
+
+
+def _contains_sensitive_personal_data_shape(content: str) -> bool:
+    # Normalize only for detection; callers keep their original display data.
+    normalized = _normalize_sensitive_data_text(content)
+    # Consume the whole numeric run before checking prefix and digit count.
+    # Formatting cannot hide a mobile number or expose a substring of a longer one.
+    for candidate in _PERSONAL_PHONE_CANDIDATE.finditer(normalized):
+        identity = re.sub(r"[ \t().-]", "", candidate.group())
+        if _PERSONAL_PHONE_IDENTITY.fullmatch(identity):
+            return True
+    return _looks_like_private_address_normalized(normalized)
+
+
 def _is_passive_sensitive(content: str) -> bool:
     normalized = content.casefold()
-    return any(marker.casefold() in normalized for marker in _PASSIVE_SENSITIVE_MARKERS)
+    return (any(marker.casefold() in normalized for marker in _PASSIVE_SENSITIVE_MARKERS)
+            or _contains_sensitive_personal_data_shape(content))
 
 
 def _normalize_optional_text(value: object, *, limit: int) -> str | None:

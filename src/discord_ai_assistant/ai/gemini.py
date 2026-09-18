@@ -4,11 +4,17 @@ import asyncio
 import base64
 import json
 import logging
+import re
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cache
+from importlib import metadata
 from typing import Any
 
 from discord_ai_assistant.ai.memory import MemoryDraft, parse_memory_drafts
+from discord_ai_assistant.ai.model_router import error_status_code
 from discord_ai_assistant.ai.tools import TOOL_DECLARATIONS, ToolContext, ToolRouter
 from discord_ai_assistant.character_profile import is_moxue_self_image_request
 from discord_ai_assistant.time_utils import resolve_timezone
@@ -60,6 +66,44 @@ class GeminiRequestError(RuntimeError):
     """A Gemini failure translated into a safe message for Discord users."""
 
 
+@cache
+def _diagnostic_sdk_version() -> str:
+    try:
+        version = metadata.version("google-genai")
+        return re.sub(r"[^A-Za-z0-9_.+-]", "", version[:32]) or "unknown"
+    except Exception:
+        return "unknown"
+
+
+@contextmanager
+def _single_attempt_diagnostics() -> Iterator[None]:
+    """Own one failure record; never format exception text or its traceback."""
+    try:
+        yield
+    except Exception as error:
+        error_type = re.sub(r"[^A-Za-z0-9_]", "", type(error).__name__[:80]) or "UnknownError"
+        try:
+            status = error_status_code(error)
+        except Exception:
+            status = None
+        # Reject arbitrary status objects and out-of-range integers before logging.
+        status = status if type(status) is int and 100 <= status <= 599 else "unknown"
+        LOGGER.warning(
+            "Public term lookup transport failed stage=single_attempt error_type=%s status=%s sdk=%s",
+            error_type, status, _diagnostic_sdk_version(),
+        )
+        raise GeminiRequestError(describe_gemini_error(error)) from error
+
+
+async def _send_interaction(client: Any, *, timeout_seconds: int, **kwargs: object) -> Any:
+    """Transport only; the caller owns ordinary versus one-attempt diagnostics."""
+    http_timeout_seconds = max(1, timeout_seconds - HTTP_TIMEOUT_MARGIN_SECONDS)
+    return await asyncio.wait_for(
+        asyncio.to_thread(client.interactions.create, timeout=http_timeout_seconds, **kwargs),
+        timeout=timeout_seconds,
+    )
+
+
 def describe_gemini_error(error: Exception) -> str:
     """Return a user-facing error without exposing API details or credentials."""
     message = str(error).upper()
@@ -93,6 +137,7 @@ class GeminiAssistant:
         self.router = router
         self.timezone = resolve_timezone(timezone_name)
         self._client: Any | None = None
+        self._single_attempt_client: Any | None = None
 
     @property
     def enabled(self) -> bool:
@@ -105,6 +150,9 @@ class GeminiAssistant:
         image_bytes: bytes | None = None,
         image_mime_type: str | None = None,
         persona_instruction: str | None = None,
+        *,
+        private_chat_style_context: str = "",
+        private_chat_style_context_provider: Callable[[], str] | None = None,
     ) -> AssistantReply:
         if not self.api_key:
             raise RuntimeError("尚未設定 GEMINI_API_KEY。")
@@ -117,6 +165,21 @@ class GeminiAssistant:
         if self._has_external_web_tool(external_tools):
             native_tools = [tool for tool in native_tools if tool.get("type") != "google_search"]
         tools = [*native_tools, *external_tools]
+        # Final capability selection owns this boundary. Private style/terms
+        # must neither influence tool selection nor enter a web-capable input.
+        has_web = any(tool.get("type") == "google_search" for tool in tools) or self._has_external_web_tool(tools)
+        if not has_web and private_chat_style_context_provider is not None:
+            # Synchronous final authorization, after refresh and tool selection;
+            # there is no await between this policy check and initial model send.
+            try:
+                private_chat_style_context = private_chat_style_context_provider()
+            except Exception as error:
+                LOGGER.warning("Chat Style final context unavailable (%s)", type(error).__name__)
+                private_chat_style_context = ""
+        model_prompt = (
+            f"{private_chat_style_context}\n\n{prompt}"
+            if private_chat_style_context and not has_web else prompt
+        )
         tool_instruction = (
             "You may only request actions through the supplied tools. "
             "Use an available web capability when a current recommendation, event, product, release, or other fresh public information would improve the answer. "
@@ -128,7 +191,7 @@ class GeminiAssistant:
         input_parts: list[dict[str, str]] = [
             {
                 "type": "text",
-                "text": f"<untrusted_discord_input>\n{prompt}\n</untrusted_discord_input>",
+                "text": f"<untrusted_discord_input>\n{model_prompt}\n</untrusted_discord_input>",
             }
         ]
         if image_bytes:
@@ -158,7 +221,7 @@ class GeminiAssistant:
             client,
             timeout_seconds=TOOL_REQUEST_TIMEOUT_SECONDS if tools else self._chat_timeout_seconds(request_text),
             request_kind="tool" if tools else "chat",
-            input_characters=len(prompt),
+            input_characters=len(model_prompt),
             **request_options,
         )
         calls = [step for step in interaction.steps if step.type == "function_call"]
@@ -324,6 +387,23 @@ class GeminiAssistant:
         source_lines = "\n".join(f"- {title}: {url}" for title, url in citations[:5])
         return f"{text}\n\n資料來源：\n{source_lines}"
 
+    async def _create_interaction_once(
+        self,
+        client: Any,
+        *,
+        timeout_seconds: int,
+        request_kind: str,
+        input_characters: int,
+        **kwargs: object,
+    ) -> Any:
+        """Use a separate no-retry SDK client with bounded failure diagnostics."""
+        from discord_ai_assistant.ai.key_pool import _create_single_attempt_sdk_client
+
+        with _single_attempt_diagnostics():
+            if self._single_attempt_client is None:
+                self._single_attempt_client = _create_single_attempt_sdk_client(self.api_key)
+            return await _send_interaction(self._single_attempt_client, timeout_seconds=timeout_seconds, **kwargs)
+
     async def _create_interaction(
         self,
         client: Any,
@@ -340,11 +420,7 @@ class GeminiAssistant:
             timeout_seconds,
         )
         try:
-            http_timeout_seconds = max(1, timeout_seconds - HTTP_TIMEOUT_MARGIN_SECONDS)
-            return await asyncio.wait_for(
-                asyncio.to_thread(client.interactions.create, timeout=http_timeout_seconds, **kwargs),
-                timeout=timeout_seconds,
-            )
+            return await _send_interaction(client, timeout_seconds=timeout_seconds, **kwargs)
         except asyncio.TimeoutError as error:
             LOGGER.warning(
                 "Gemini %s request timed out after %s seconds (%s input characters)",

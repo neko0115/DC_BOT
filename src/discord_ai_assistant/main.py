@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from functools import partial
 from pathlib import Path
 
 import discord
@@ -12,23 +13,31 @@ from discord_ai_assistant.agent import AgentCoordinator, AgentEvent, AgentEventB
 from discord_ai_assistant.agent.bridge import AgentEventBridge
 from discord_ai_assistant.ai.evented_tools import EventedToolRouter
 from discord_ai_assistant.ai.resilient_gemini import ResilientGeminiAssistant
+from discord_ai_assistant.app_knowledge import AppKnowledgeStore
 from discord_ai_assistant.artifact_tool_effect_commands import ArtifactToolEffectAssistantCommands
 from discord_ai_assistant.capture_agent.slash import install_capture_agent_commands
 from discord_ai_assistant.capture_hub import CaptureHubServer
+from discord_ai_assistant.chat_style_commands import install_chat_style_commands
+from discord_ai_assistant.chat_style_runtime import ChatStyleRuntime
+from discord_ai_assistant.chat_style_store import ChatStyleStore
 from discord_ai_assistant.commands import AssistantCommands
 from discord_ai_assistant.config import Settings, load_settings
+from discord_ai_assistant.knowledge_enrichment import KnowledgeEnrichmentStore, PublicKnowledgeStore
 from discord_ai_assistant.knowledge_help_runtime import KnowledgeHelpRuntime
 from discord_ai_assistant.lyrics_commands import LyricsCommands
 from discord_ai_assistant.meeting_full_article_cog import MeetingReportCommands
+from discord_ai_assistant.memory_add import install_memory_add_command
 from discord_ai_assistant.memory_inspection_commands import install_memory_inspection_commands
 from discord_ai_assistant.memory_v2_runtime import MemoryV2PassiveRuntime
 from discord_ai_assistant.music.evented_player import EventedEnhancedMusicManager
 from discord_ai_assistant.music.library import LibraryService
 from discord_ai_assistant.music.player import configure_event_loop
+from discord_ai_assistant.public_term_lookup import PublicTermLookupRuntime
 from discord_ai_assistant.slash_groups import GroupedSlashCommands, remove_grouped_legacy_commands
 from discord_ai_assistant.storage.agent_database import AgentDatabase
 from discord_ai_assistant.tool_gateway.client import ToolGatewayClient
 from discord_ai_assistant.tool_gateway.server import ToolGatewayServer
+from discord_ai_assistant.tool_effect_commands import format_chat_style_context
 from discord_ai_assistant.voice.playback_watchdog import VoicePlaybackWatchdog
 from discord_ai_assistant.voice.resilient_synthesis import ResilientWindowsSpeechSynthesizer
 from discord_ai_assistant.voice.worker_commands import TTSWorkerCommands
@@ -47,6 +56,7 @@ class AssistantBot(commands.Bot):
         self.agent_bus = AgentEventBus()
         self.agent = AgentCoordinator(self.agent_bus)
         self.database = AgentDatabase(settings.database_path, self.agent_bus)
+        self.chat_style_store = ChatStyleStore(self.database)
         self.library = LibraryService(settings.library_path, self.database, settings.max_upload_bytes)
         self.music = EventedEnhancedMusicManager(
             settings.library_path,
@@ -157,17 +167,28 @@ class AssistantBot(commands.Bot):
             self.database.set_state("tts_worker_mode", "auto")
         core_commands.speech = self.speech_router
         core_commands.social.session_state = core_commands.memory_session
+        core_commands.chat_style_store = self.chat_style_store
+        core_commands.social.chat_style_context = partial(format_chat_style_context, self.chat_style_store)
+        knowledge_enrichment = KnowledgeEnrichmentStore(self.database, AppKnowledgeStore(self.database))
+        public_knowledge = PublicKnowledgeStore(self.database)
+        public_term_lookup = PublicTermLookupRuntime(knowledge_enrichment, public_knowledge, self.ai)
+        core_commands.public_term_lookup = public_term_lookup
+        core_commands.social.public_term_lookup = public_term_lookup
         await self.add_cog(core_commands)
         await self.add_cog(
             MemoryV2PassiveRuntime(self, self.database, self.ai, core_commands.memory_session)
         )
+        chat_style_runtime = ChatStyleRuntime(self, self.chat_style_store, self.ai, core_commands.memory_session)
+        await self.add_cog(chat_style_runtime)
         await self.add_cog(KnowledgeHelpRuntime(self, core_commands.social))
         await self.add_cog(AgentEventBridge(self, self.settings, self.agent_bus, self.database))
         await self.add_cog(TTSWorkerCommands(self.settings, self.database, self.speech_router))
         await self.add_cog(VoicePlaybackWatchdog(self, self.music))
         grouped_commands = GroupedSlashCommands(core_commands)
+        install_memory_add_command(grouped_commands)
         install_capture_agent_commands(grouped_commands, self.capture_hub_server)
         install_memory_inspection_commands(grouped_commands)
+        install_chat_style_commands(grouped_commands, chat_style_runtime)
         await self.add_cog(grouped_commands)
         await self.add_cog(LyricsCommands(self, self.music, self.database))
         remove_grouped_legacy_commands(self.tree)

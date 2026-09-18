@@ -1,7 +1,7 @@
 [project]
 name = "discord-ai-assistant"
-version = "0.6.1"
-description = "Private Discord music assistant with optional Gemini tools"
+version = "0.7.0"
+description = "Self-hosted Discord AI assistant with memory, chat style, meeting, voice, and tool integrations"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "aiohttp>=3.12,<4",

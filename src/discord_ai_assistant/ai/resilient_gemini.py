@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import Any
 
 from discord_ai_assistant.ai.control_response import normalize_control_response
-from discord_ai_assistant.ai.gemini import GeminiAssistant, GeminiRequestError
+from discord_ai_assistant.ai.gemini import (
+    GeminiAssistant, GeminiRequestError, _send_interaction, _single_attempt_diagnostics,
+)
 from discord_ai_assistant.ai.key_pool import FailoverGeminiClient, load_gemini_api_keys
 from discord_ai_assistant.ai.model_router import (
     GeminiModelRouter,
@@ -42,6 +45,53 @@ class ResilientGeminiAssistant(GeminiAssistant):
         if self._client is None:
             self._client = FailoverGeminiClient(self.api_keys)
         return self._client
+
+    async def _create_interaction_once(
+        self,
+        client: Any,
+        *,
+        timeout_seconds: int,
+        request_kind: str,
+        input_characters: int,
+        **kwargs: object,
+    ) -> Any:
+        """Select one available model/key without retrying this interaction.
+
+        Keep normal routing and continuation affinity. Failures update the shared
+        route/key state for the next request, never continue to another candidate.
+        """
+        previous_id = kwargs.get("previous_interaction_id")
+        previous_interaction_id = previous_id if isinstance(previous_id, str) else None
+        pinned_model = self.model_router.model_for_interaction(previous_interaction_id)
+        requested_model = kwargs.get("model")
+        explicit_model = requested_model if isinstance(requested_model, str) and requested_model else None
+        workload = infer_workload(
+            request_kind, input_characters=input_characters,
+            input_payload=kwargs.get("input"), tools=kwargs.get("tools"),
+        )
+        if pinned_model is not None:
+            candidates = (pinned_model,)
+        elif explicit_model and explicit_model != self.model and previous_interaction_id is None:
+            candidates = (explicit_model,)
+        else:
+            candidates = self.model_router.candidate_models(workload)
+        if not candidates:
+            raise GeminiRequestError(self.model_router.unavailable_message(workload))
+        candidate_model = candidates[0]
+        request_options = {**kwargs, "model": candidate_model}
+        # Adapt only this invocation. The shared client's ordinary create still
+        # retries keys; the base timeout machinery sees a single-key operation.
+        once_client = SimpleNamespace(interactions=SimpleNamespace(create=client.interactions.create_once))
+        try:
+            with _single_attempt_diagnostics():
+                interaction = await _send_interaction(once_client, timeout_seconds=timeout_seconds, **request_options)
+        except GeminiRequestError as error:
+            if is_model_fallback_error(error):
+                self.model_router.mark_failure(workload, candidate_model, error)
+            raise
+        self.model_router.mark_success(candidate_model)
+        self.model_router.remember_interaction(interaction, candidate_model)
+        return interaction
 
     async def _create_interaction(
         self,
