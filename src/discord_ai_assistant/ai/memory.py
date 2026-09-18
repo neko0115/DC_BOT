@@ -55,6 +55,32 @@ _EXPLICIT_MEMORY_SUFFIX = re.compile(
     r"^\s*(?:@?(?:墨雪|你)\s*[，,]?\s*)?(?:(?:請|麻煩|幫我|可以|能不能)\s*)?"
     r"把\s*(.+?)\s*(?:記住|記下來|記起來)\s*$"
 )
+_EXPLICIT_PROJECT_MARKERS = (
+    "我正在做",
+    "我目前在做",
+    "我的專案",
+    "我的工作",
+    "這個專案",
+    "這項專案",
+    "專案目前",
+    "專案現在",
+)
+_EXPLICIT_EPISODIC_MARKERS = (
+    "上次",
+    "之前",
+    "曾經",
+    "那次",
+    "後來",
+    "昨天",
+    "今天",
+    "發生",
+    "我們決定",
+    "最後決定",
+    "已經修好",
+    "已經完成",
+    "測試通過",
+    "測試失敗",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,8 +136,10 @@ def _explicit_memory_category(content: str) -> str:
         return "習慣"
     if content.startswith(("我在玩", "我最近在玩", "我的興趣", "我的愛好")):
         return "興趣"
-    if content.startswith(("我正在做", "我目前在做", "我的專案", "我的工作")):
+    if any(marker in content for marker in _EXPLICIT_PROJECT_MARKERS):
         return "專案"
+    if any(marker in content for marker in _EXPLICIT_EPISODIC_MARKERS):
+        return "事件"
     return "提醒"
 
 

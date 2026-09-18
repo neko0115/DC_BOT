@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from discord_ai_assistant.ai.gemini import AssistantReply
 from discord_ai_assistant.ai.tools import ToolRouter
@@ -44,6 +46,30 @@ class ToolEffectTests(unittest.TestCase):
 
     def test_runtime_cog_overrides_legacy_five_message_history(self) -> None:
         self.assertIsNot(ToolEffectAssistantCommands._with_history, AssistantCommands._with_history)
+
+    def test_memory_v2_uses_current_request_as_retrieval_query(self) -> None:
+        database = SimpleNamespace(
+            user_memory_context=MagicMock(return_value="- [事件] 火箭回收段主傘曾經打到尾翼")
+        )
+        core = SimpleNamespace(
+            ai=SimpleNamespace(_request_text=lambda prompt: "之前火箭主傘發生什麼事"),
+            database=database,
+        )
+
+        enriched = ToolEffectAssistantCommands._with_user_memory(
+            core,
+            "Discord 對話脈絡：...\n\n目前請求：之前火箭主傘發生什麼事",
+            1,
+            2,
+        )
+
+        database.user_memory_context.assert_called_once_with(
+            1,
+            2,
+            query="之前火箭主傘發生什麼事",
+        )
+        self.assertIn("火箭回收段主傘", enriched)
+        self.assertIn("依目前問題檢索", enriched)
 
     def test_native_knowledge_help_uses_non_failing_message_reference(self) -> None:
         source = inspect.getsource(ToolEffectAssistantCommands._deliver_knowledge_help)

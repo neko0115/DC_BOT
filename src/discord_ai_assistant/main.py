@@ -19,6 +19,8 @@ from discord_ai_assistant.config import Settings, load_settings
 from discord_ai_assistant.knowledge_help_runtime import KnowledgeHelpRuntime
 from discord_ai_assistant.lyrics_commands import LyricsCommands
 from discord_ai_assistant.meeting_full_article_cog import MeetingReportCommands
+from discord_ai_assistant.memory_inspection_commands import install_memory_inspection_commands
+from discord_ai_assistant.memory_v2_runtime import MemoryV2PassiveRuntime
 from discord_ai_assistant.music.evented_player import EventedEnhancedMusicManager
 from discord_ai_assistant.music.library import LibraryService
 from discord_ai_assistant.music.player import configure_event_loop
@@ -155,12 +157,14 @@ class AssistantBot(commands.Bot):
             self.database.set_state("tts_worker_mode", "auto")
         core_commands.speech = self.speech_router
         await self.add_cog(core_commands)
+        await self.add_cog(MemoryV2PassiveRuntime(self, self.database, self.ai))
         await self.add_cog(KnowledgeHelpRuntime(self, core_commands.social))
         await self.add_cog(AgentEventBridge(self, self.settings, self.agent_bus, self.database))
         await self.add_cog(TTSWorkerCommands(self.settings, self.database, self.speech_router))
         await self.add_cog(VoicePlaybackWatchdog(self, self.music))
         grouped_commands = GroupedSlashCommands(core_commands)
         install_capture_agent_commands(grouped_commands, self.capture_hub_server)
+        install_memory_inspection_commands(grouped_commands)
         await self.add_cog(grouped_commands)
         await self.add_cog(LyricsCommands(self, self.music, self.database))
         remove_grouped_legacy_commands(self.tree)
