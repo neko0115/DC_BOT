@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 from functools import partial
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 
 import discord
@@ -22,6 +23,7 @@ from discord_ai_assistant.chat_style_runtime import ChatStyleRuntime
 from discord_ai_assistant.chat_style_store import ChatStyleStore
 from discord_ai_assistant.commands import AssistantCommands
 from discord_ai_assistant.config import Settings, load_settings
+from discord_ai_assistant.heartbeat import HeartbeatClient
 from discord_ai_assistant.knowledge_enrichment import KnowledgeEnrichmentStore, PublicKnowledgeStore
 from discord_ai_assistant.knowledge_help_runtime import KnowledgeHelpRuntime
 from discord_ai_assistant.lyrics_commands import LyricsCommands
@@ -45,6 +47,11 @@ from discord_ai_assistant.voice.worker_pool import WorkerPoolSpeechSynthesizer, 
 
 LOGGER = logging.getLogger(__name__)
 
+try:
+    APP_VERSION = package_version("discord-ai-assistant")
+except PackageNotFoundError:
+    APP_VERSION = "dev"
+
 
 class AssistantBot(commands.Bot):
     def __init__(self, settings: Settings) -> None:
@@ -52,6 +59,17 @@ class AssistantBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.settings = settings
+        self.heartbeat_client: HeartbeatClient | None = None
+        if settings.heartbeat_url and settings.heartbeat_token:
+            self.heartbeat_client = HeartbeatClient(
+                url=settings.heartbeat_url,
+                token=settings.heartbeat_token,
+                service_id="discord-bot",
+                version=APP_VERSION,
+                interval_seconds=settings.heartbeat_interval_seconds,
+                timeout_seconds=settings.heartbeat_timeout_seconds,
+                payload_factory=lambda: {"ready": self.is_ready()},
+            )
 
         self.agent_bus = AgentEventBus()
         self.agent = AgentCoordinator(self.agent_bus)
@@ -205,6 +223,8 @@ class AssistantBot(commands.Bot):
 
     async def on_ready(self) -> None:
         LOGGER.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown")
+        if self.heartbeat_client is not None:
+            self.heartbeat_client.start()
         await self.agent.publish(
             AgentEvent(
                 AgentEventKind.BOT_READY,
@@ -216,6 +236,8 @@ class AssistantBot(commands.Bot):
             await commands_cog.announce_version_if_needed()
 
     async def close(self) -> None:
+        if self.heartbeat_client is not None:
+            await self.heartbeat_client.close()
         await self.agent.stop()
         if self.speech_router is not None:
             await self.speech_router.close()
