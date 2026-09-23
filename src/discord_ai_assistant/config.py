@@ -166,7 +166,7 @@ def load_settings(project_root: Path) -> Settings:
 
     heartbeat_url = os.getenv("MOXUE_HEARTBEAT_URL", "").strip() or None
     heartbeat_token = os.getenv("MOXUE_HEARTBEAT_TOKEN", "").strip() or None
-    heartbeat_interval_seconds = float(os.getenv("MOXUE_HEARTBEAT_INTERVAL_SECONDS", "60"))
+    heartbeat_interval_seconds = float(os.getenv("MOXUE_HEARTBEAT_INTERVAL_SECONDS", "600"))
     heartbeat_timeout_seconds = float(os.getenv("MOXUE_HEARTBEAT_TIMEOUT_SECONDS", "8"))
     if heartbeat_url and not heartbeat_token:
         raise RuntimeError("MOXUE_HEARTBEAT_TOKEN is required when MOXUE_HEARTBEAT_URL is set.")
