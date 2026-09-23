@@ -104,11 +104,16 @@ Optional Moxue Hub status heartbeat:
 ```env
 MOXUE_HEARTBEAT_URL=https://moxueneko.com/api/heartbeat
 MOXUE_HEARTBEAT_TOKEN=<shared secret configured in Cloudflare>
-MOXUE_HEARTBEAT_INTERVAL_SECONDS=60
+MOXUE_HEARTBEAT_INTERVAL_SECONDS=600
 ```
 
 The heartbeat is outbound-only and reports only service readiness, package version,
 and process uptime. The Bot does not open a public health port.
+Deploy the site's 15-minute timeout before switching the Bot to a 10-minute
+heartbeat. If your existing `.env` explicitly sets the interval to `60`, edit
+it to `600` and restart the Bot; changing the code default will not override
+the local setting. The site receiver also limits unchanged KV writes to one
+every 10 minutes for clients still using a shorter interval.
 
 GPT-SoVITS itself is external to this repository. GPT-SoVITS weights, checkpoints,
 reference audio, private voice assets, and model files are **not included**.

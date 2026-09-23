@@ -44,7 +44,7 @@ class SettingsTests(unittest.TestCase):
         self.assertIsNone(settings.tool_gateway_token)
         self.assertIsNone(settings.heartbeat_url)
         self.assertIsNone(settings.heartbeat_token)
-        self.assertEqual(settings.heartbeat_interval_seconds, 60)
+        self.assertEqual(settings.heartbeat_interval_seconds, 600)
         self.assertEqual(settings.heartbeat_timeout_seconds, 8)
 
     def test_heartbeat_settings_can_be_enabled(self) -> None:
