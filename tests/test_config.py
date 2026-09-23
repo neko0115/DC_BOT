@@ -42,6 +42,35 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.tool_gateway_refresh_seconds, 30)
         self.assertEqual(settings.tool_gateway_timeout_seconds, 60)
         self.assertIsNone(settings.tool_gateway_token)
+        self.assertIsNone(settings.heartbeat_url)
+        self.assertIsNone(settings.heartbeat_token)
+        self.assertEqual(settings.heartbeat_interval_seconds, 60)
+        self.assertEqual(settings.heartbeat_timeout_seconds, 8)
+
+    def test_heartbeat_settings_can_be_enabled(self) -> None:
+        environment = {
+            "DISCORD_TOKEN": "test-token",
+            "MOXUE_HEARTBEAT_URL": "https://moxueneko.com/api/heartbeat",
+            "MOXUE_HEARTBEAT_TOKEN": "heartbeat-secret",
+            "MOXUE_HEARTBEAT_INTERVAL_SECONDS": "45",
+            "MOXUE_HEARTBEAT_TIMEOUT_SECONDS": "6",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, environment, clear=True):
+            settings = load_settings(Path(directory))
+
+        self.assertEqual(settings.heartbeat_url, "https://moxueneko.com/api/heartbeat")
+        self.assertEqual(settings.heartbeat_token, "heartbeat-secret")
+        self.assertEqual(settings.heartbeat_interval_seconds, 45)
+        self.assertEqual(settings.heartbeat_timeout_seconds, 6)
+
+    def test_heartbeat_url_requires_token(self) -> None:
+        environment = {
+            "DISCORD_TOKEN": "test-token",
+            "MOXUE_HEARTBEAT_URL": "https://moxueneko.com/api/heartbeat",
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, environment, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "MOXUE_HEARTBEAT_TOKEN"):
+                load_settings(Path(directory))
 
     def test_youtube_browser_cookie_setting_is_loaded(self) -> None:
         environment = {
