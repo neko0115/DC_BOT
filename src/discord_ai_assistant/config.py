@@ -66,6 +66,10 @@ class Settings:
     tool_gateway_token: str | None
     tool_gateway_refresh_seconds: float
     tool_gateway_timeout_seconds: float
+    heartbeat_url: str | None
+    heartbeat_token: str | None
+    heartbeat_interval_seconds: float
+    heartbeat_timeout_seconds: float
 
     @property
     def database_path(self) -> Path:
@@ -160,6 +164,23 @@ def load_settings(project_root: Path) -> Settings:
     if tool_gateway_timeout_seconds < 1:
         raise RuntimeError("TOOL_GATEWAY_TIMEOUT_SECONDS must be at least 1.")
 
+    heartbeat_url = os.getenv("MOXUE_HEARTBEAT_URL", "").strip() or None
+    heartbeat_token = os.getenv("MOXUE_HEARTBEAT_TOKEN", "").strip() or None
+    heartbeat_interval_seconds = float(os.getenv("MOXUE_HEARTBEAT_INTERVAL_SECONDS", "60"))
+    heartbeat_timeout_seconds = float(os.getenv("MOXUE_HEARTBEAT_TIMEOUT_SECONDS", "8"))
+    if heartbeat_url and not heartbeat_token:
+        raise RuntimeError("MOXUE_HEARTBEAT_TOKEN is required when MOXUE_HEARTBEAT_URL is set.")
+    if heartbeat_url and not (
+        heartbeat_url.startswith("https://")
+        or heartbeat_url.startswith("http://127.0.0.1")
+        or heartbeat_url.startswith("http://localhost")
+    ):
+        raise RuntimeError("MOXUE_HEARTBEAT_URL must use HTTPS, except for localhost development.")
+    if not 15 <= heartbeat_interval_seconds <= 600:
+        raise RuntimeError("MOXUE_HEARTBEAT_INTERVAL_SECONDS must be between 15 and 600.")
+    if not 1 <= heartbeat_timeout_seconds <= 30:
+        raise RuntimeError("MOXUE_HEARTBEAT_TIMEOUT_SECONDS must be between 1 and 30.")
+
     return Settings(
         project_root=project_root,
         discord_token=token,
@@ -218,4 +239,8 @@ def load_settings(project_root: Path) -> Settings:
         tool_gateway_token=os.getenv("TOOL_GATEWAY_TOKEN", "").strip() or None,
         tool_gateway_refresh_seconds=tool_gateway_refresh_seconds,
         tool_gateway_timeout_seconds=tool_gateway_timeout_seconds,
+        heartbeat_url=heartbeat_url,
+        heartbeat_token=heartbeat_token,
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
+        heartbeat_timeout_seconds=heartbeat_timeout_seconds,
     )
