@@ -99,6 +99,17 @@ Web research and image generation require the corresponding provider credentials
 `.env.example`. Distributed TTS workers require an authenticated trusted-network
 deployment.
 
+Optional Moxue Hub status heartbeat:
+
+```env
+MOXUE_HEARTBEAT_URL=https://moxueneko.com/api/heartbeat
+MOXUE_HEARTBEAT_TOKEN=<shared secret configured in Cloudflare>
+MOXUE_HEARTBEAT_INTERVAL_SECONDS=60
+```
+
+The heartbeat is outbound-only and reports only service readiness, package version,
+and process uptime. The Bot does not open a public health port.
+
 GPT-SoVITS itself is external to this repository. GPT-SoVITS weights, checkpoints,
 reference audio, private voice assets, and model files are **not included**.
 
