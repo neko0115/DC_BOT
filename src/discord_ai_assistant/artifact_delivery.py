@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
+import zipfile
 from typing import NamedTuple
 
 MAX_TOOL_ARTIFACT_BYTES = 10 * 1024 * 1024
@@ -8,6 +9,9 @@ ALLOWED_ARTIFACT_TYPES: dict[str, frozenset[str]] = {
     "image/jpeg": frozenset({".jpg", ".jpeg"}),
     "image/png": frozenset({".png"}),
     "image/webp": frozenset({".webp"}),
+    "text/markdown": frozenset({".md"}),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": frozenset({".docx"}),
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": frozenset({".pptx"}),
 }
 
 
@@ -28,7 +32,7 @@ def _safe_filename(value: object, fallback: str, allowed_suffixes: frozenset[str
     return candidate
 
 
-def _matches_image_magic(path: Path, mime_type: str) -> bool:
+def _matches_artifact_content(path: Path, mime_type: str) -> bool:
     try:
         header = path.read_bytes()[:12]
     except OSError:
@@ -39,6 +43,25 @@ def _matches_image_magic(path: Path, mime_type: str) -> bool:
         return header.startswith(b"\x89PNG\r\n\x1a\n")
     if mime_type == "image/webp":
         return len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP"
+    if mime_type == "text/markdown":
+        try:
+            return bool(path.read_text(encoding="utf-8").strip())
+        except (OSError, UnicodeDecodeError):
+            return False
+    if mime_type in {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }:
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = set(archive.namelist())
+        except (OSError, zipfile.BadZipFile):
+            return False
+        if "[Content_Types].xml" not in names:
+            return False
+        if mime_type.endswith("wordprocessingml.document"):
+            return "word/document.xml" in names
+        return "ppt/presentation.xml" in names
     return False
 
 
@@ -81,7 +104,7 @@ def resolve_artifact_effect(
     except OSError:
         return None
     size_limit = min(max(1, int(max_upload_bytes)), MAX_TOOL_ARTIFACT_BYTES)
-    if size <= 0 or size > size_limit or not _matches_image_magic(path, mime_type):
+    if size <= 0 or size > size_limit or not _matches_artifact_content(path, mime_type):
         return None
 
     filename = _safe_filename(effect.get("filename"), path.name, allowed_suffixes)

@@ -6,6 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from docx import Document
+from pptx import Presentation
+
 from discord_ai_assistant.ai.tools import ToolRouter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +78,59 @@ class ArtifactDeliveryContractTests(unittest.TestCase):
             }
         )
         self.assertNotIn("_moxue_effects", result)
+
+    def test_core_resolver_accepts_valid_office_and_markdown_artifacts(self) -> None:
+        delivery = load_delivery()
+        with tempfile.TemporaryDirectory() as directory:
+            project_root = Path(directory)
+            root = project_root / "data" / "tool-artifacts" / "document_generation"
+            root.mkdir(parents=True)
+
+            docx_path = root / "report.docx"
+            document = Document()
+            document.add_paragraph("測試 Word")
+            document.save(docx_path)
+
+            pptx_path = root / "slides.pptx"
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[0])
+            slide.shapes.title.text = "測試簡報"
+            presentation.save(pptx_path)
+
+            md_path = root / "notes.md"
+            md_path.write_text("# 測試 Markdown\n", encoding="utf-8")
+
+            effects = [
+                {
+                    "type": "attach_artifact",
+                    "relative_path": "document_generation/report.docx",
+                    "filename": "report.docx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                },
+                {
+                    "type": "attach_artifact",
+                    "relative_path": "document_generation/slides.pptx",
+                    "filename": "slides.pptx",
+                    "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                },
+                {
+                    "type": "attach_artifact",
+                    "relative_path": "document_generation/notes.md",
+                    "filename": "notes.md",
+                    "mime_type": "text/markdown",
+                },
+            ]
+            for effect in effects:
+                self.assertIsNotNone(
+                    delivery.resolve_artifact_effect(project_root, 25 * 1024 * 1024, effect)
+                )
+
+            fake_docx = root / "fake.docx"
+            fake_docx.write_bytes(b"PK but not really an Office archive")
+            fake_effect = dict(effects[0], relative_path="document_generation/fake.docx")
+            self.assertIsNone(
+                delivery.resolve_artifact_effect(project_root, 25 * 1024 * 1024, fake_effect)
+            )
 
     def test_core_resolver_enforces_root_mime_size_magic_and_symlink(self) -> None:
         delivery = load_delivery()

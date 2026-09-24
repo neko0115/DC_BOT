@@ -1,0 +1,68 @@
+{
+  "name": "document_generation",
+  "version": "0.1.0",
+  "description": "Create polished PowerPoint, Word, and Markdown files when the user explicitly asks for downloadable documents or presentation files.",
+  "enabled": true,
+  "entrypoint": "tool.py",
+  "trigger_keywords": ["ppt", "pptx", "powerpoint", "簡報", "投影片", "口說稿", "講稿", "docx", "word", "文件", "markdown", "md檔"],
+  "always_available": false,
+  "actions": {
+    "create_presentation_package": {
+      "description": "Create a designed PPTX plus a DOCX speaker script. Use when the user explicitly requests a presentation, slides, PPT, PowerPoint, and/or an oral presentation script.",
+      "requires_dj": false,
+      "trigger_keywords": ["ppt", "pptx", "powerpoint", "簡報", "投影片", "口說稿", "講稿", "上台報告"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string", "description": "Presentation title."},
+          "subtitle": {"type": "string", "description": "Optional subtitle or context."},
+          "slides": {
+            "type": "array",
+            "description": "Presentation slides in order. Keep each slide concise and put spoken detail in speaker_notes.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "title": {"type": "string"},
+                "bullets": {"type": "array", "items": {"type": "string"}},
+                "speaker_notes": {"type": "string"}
+              },
+              "required": ["title", "bullets"]
+            }
+          },
+          "theme": {
+            "type": "string",
+            "enum": ["modern", "academic", "minimal"],
+            "description": "Visual theme. Defaults to modern."
+          },
+          "filename_stem": {"type": "string", "description": "Optional safe base filename without extension."}
+        },
+        "required": ["title", "slides"]
+      }
+    },
+    "create_document": {
+      "description": "Create a DOCX and matching Markdown document. Use only when the user explicitly asks for a Word/DOCX/Markdown file or downloadable written document.",
+      "requires_dj": false,
+      "trigger_keywords": ["docx", "word", "文件", "markdown", "md檔", "講稿"],
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string"},
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "heading": {"type": "string"},
+                "body": {"type": "string"},
+                "bullets": {"type": "array", "items": {"type": "string"}}
+              },
+              "required": ["heading"]
+            }
+          },
+          "filename_stem": {"type": "string", "description": "Optional safe base filename without extension."}
+        },
+        "required": ["title", "sections"]
+      }
+    }
+  }
+}
