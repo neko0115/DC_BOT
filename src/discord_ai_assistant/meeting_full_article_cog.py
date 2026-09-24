@@ -27,7 +27,10 @@ from discord_ai_assistant.meeting_feedback_cog import (
     MeetingReportReviewView as LegacyMeetingReportReviewView,
     _candidate_label,
 )
-from discord_ai_assistant.meeting_upload import build_meeting_report_prompt
+from discord_ai_assistant.meeting_upload import (
+    build_meeting_report_prompt,
+    normalize_report_timecode_particle_order,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -391,7 +394,7 @@ class MeetingReportCommands(FeedbackMeetingReportCommands):
                 prompt,
                 persona_instruction=persona_instruction,
             )
-        result = str(text).strip()
+        result = normalize_report_timecode_particle_order(str(text).strip())
         if not result:
             raise RuntimeError("Gemini 沒有回傳週會報內容。")
         return result
