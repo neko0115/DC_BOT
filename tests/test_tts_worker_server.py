@@ -11,6 +11,7 @@ from discord_ai_assistant.voice.worker_server import (
     GPUProbe,
     MoxueTTSWorkerServer,
     WorkerServerSettings,
+    load_worker_dotenv,
     load_worker_settings,
 )
 
@@ -22,6 +23,39 @@ class TTSWorkerServerTests(unittest.TestCase):
         self.assertEqual(metrics.memory_used_mb, 4210)
         self.assertEqual(metrics.memory_total_mb, 8192)
         self.assertEqual(metrics.memory_free_mb, 3982)
+
+
+    def test_worker_loads_project_dotenv_without_overriding_explicit_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dotenv_reference = root / "dotenv.wav"
+            explicit_reference = root / "explicit.wav"
+            dotenv_reference.write_bytes(b"RIFF")
+            explicit_reference.write_bytes(b"RIFF")
+            (root / ".env").write_text(
+                "\n".join(
+                    [
+                        f"MOXUE_TTS_REF_AUDIO_PATH={dotenv_reference}",
+                        "MOXUE_TTS_UPSTREAM_URL=http://127.0.0.1:9880",
+                        "MOXUE_TTS_WORKER_NAME=dotenv-worker",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict(
+                os.environ,
+                {"MOXUE_TTS_REF_AUDIO_PATH": str(explicit_reference)},
+                clear=True,
+            ):
+                loaded_path = load_worker_dotenv(root)
+                settings = load_worker_settings()
+
+            self.assertEqual(loaded_path, root / ".env")
+            self.assertEqual(settings.ref_audio_path, explicit_reference.resolve())
+            self.assertEqual(settings.name, "dotenv-worker")
+            self.assertEqual(settings.upstream_url, "http://127.0.0.1:9880")
 
     def test_remote_bind_requires_token(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
