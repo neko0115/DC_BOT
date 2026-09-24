@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from dataclasses import dataclass
@@ -141,6 +142,73 @@ def parse_ai_candidates(text: str) -> list[FeedbackCandidate]:
                 confidence=confidence,
             )
         )
+    return result
+
+
+def infer_partial_asr_candidates(
+    original_report: str,
+    revised_report: str,
+    transcript: str,
+    *,
+    limit: int = 12,
+) -> list[FeedbackCandidate]:
+    """Surface short human replacements as opt-in ASR candidates, even if only one occurrence was fixed."""
+    matcher = difflib.SequenceMatcher(None, original_report, revised_report, autojunk=False)
+    result: list[FeedbackCandidate] = []
+    seen: set[tuple[str, str]] = set()
+
+    def clean(value: str) -> str:
+        return value.strip().strip(" \\t\\r\\n`*_~'\"「」『』()（）[]【】<>《》-—")
+
+    def term_like(value: str) -> bool:
+        return bool(value) and len(value) <= 8 and "\n" not in value and bool(
+            re.fullmatch(r"[0-9A-Za-z\u3400-\u9fff ._+-]+", value)
+        )
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "replace":
+            continue
+        source = clean(original_report[i1:i2])
+        target = clean(revised_report[j1:j2])
+
+        # SequenceMatcher often isolates one changed CJK character (阿霧 -> 阿鳴
+        # becomes 霧 -> 鳴). Include one shared neighboring CJK character so the
+        # candidate stays specific enough for a human to approve safely.
+        if len(source) == 1 and len(target) == 1 and i1 > 0 and j1 > 0:
+            left_original = original_report[i1 - 1]
+            left_revised = revised_report[j1 - 1]
+            if left_original == left_revised and re.fullmatch(r"[\u3400-\u9fff]", left_original):
+                source = left_original + source
+                target = left_revised + target
+        if len(source) == 1 and len(target) == 1 and i2 < len(original_report) and j2 < len(revised_report):
+            right_original = original_report[i2]
+            right_revised = revised_report[j2]
+            if right_original == right_revised and re.fullmatch(r"[\u3400-\u9fff]", right_original):
+                source += right_original
+                target += right_revised
+
+        source = clean(source)
+        target = clean(target)
+        if not term_like(source) or not term_like(target):
+            continue
+        if source.casefold() == target.casefold() or source not in transcript:
+            continue
+        key = (source.casefold(), target.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(
+            FeedbackCandidate(
+                kind="asr_alias",
+                source_text=source,
+                canonical_term=target,
+                explanation="人工完整修正版至少修正過一次；請人工確認是否為可重用的 ASR 錯詞對應。",
+                aliases=(source,),
+                confidence=0.75,
+            )
+        )
+        if len(result) >= max(1, min(limit, 12)):
+            break
     return result
 
 
