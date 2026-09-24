@@ -23,6 +23,7 @@ from discord_ai_assistant.meeting_glossary import (
     glossary_for_title,
     glossary_for_transcript,
 )
+from discord_ai_assistant.meeting_report_exports import build_meeting_report_exports
 from discord_ai_assistant.meeting_upload import (
     LocalMeetingTranscriber,
     MeetingReportCommands as BaseMeetingReportCommands,
@@ -506,9 +507,15 @@ class MeetingReportCommands(BaseMeetingReportCommands):
         safe_title = _safe_filename(title, "meeting")
         if not chunks:
             raise RuntimeError("週會報內容為空。")
+
+        exports = await asyncio.to_thread(build_meeting_report_exports, report_path, title=title)
         await channel.send(
             content=chunks[0],
-            file=discord.File(report_path, filename=f"{safe_title}_週會報.md"),
+            files=[
+                discord.File(exports.markdown, filename=f"{safe_title}_週會報.md"),
+                discord.File(exports.docx, filename=f"{safe_title}_週會報.docx"),
+                discord.File(exports.pptx, filename=f"{safe_title}_週會報.pptx"),
+            ],
             allowed_mentions=discord.AllowedMentions.none(),
         )
         for chunk in chunks[1:]:
