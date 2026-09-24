@@ -56,6 +56,21 @@ class MeetingKnowledgeTests(unittest.TestCase):
         self.assertIn("第四網", corrected)
         self.assertEqual(len(audit), 2)
 
+    def test_approved_alias_correction_replaces_every_occurrence_at_runtime(self) -> None:
+        snapshot = AppKnowledgeSnapshot(
+            profile=self.snapshot.profile,
+            terms=(
+                AppKnowledgeTerm(
+                    term="阿鳴",
+                    explanation="人工核准的參與者名稱。",
+                    aliases=("阿霧",),
+                ),
+            ),
+        )
+        corrected, audit = _apply_snapshot_corrections("阿霧先說，阿霧再確認，最後還是阿霧。", snapshot)
+        self.assertEqual(corrected, "阿鳴先說，阿鳴再確認，最後還是阿鳴。")
+        self.assertEqual(audit, [{"from": "阿霧", "to": "阿鳴", "count": 3}])
+
     def test_discord_chunks_stay_under_message_limit(self) -> None:
         text = ("段落 A\n" * 500) + "\n\n" + ("段落 B\n" * 500)
         chunks = _discord_chunks(text, limit=500)
