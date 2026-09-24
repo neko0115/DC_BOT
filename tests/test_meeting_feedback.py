@@ -8,6 +8,7 @@ from pathlib import Path
 from discord_ai_assistant.meeting_feedback import (
     FeedbackCandidate,
     MeetingFeedbackStore,
+    infer_partial_asr_candidates,
     merge_candidates,
     parse_ai_candidates,
     parse_explicit_corrections,
@@ -60,6 +61,15 @@ class MeetingFeedbackParsingTests(unittest.TestCase):
         candidates = parse_ai_candidates(json.dumps(payload, ensure_ascii=False))
         self.assertEqual([item.kind for item in candidates], ["asr_alias", "report_preference"])
         self.assertEqual(candidates[0].aliases, ("信息",))
+
+    def test_partial_full_article_replacement_still_becomes_selectable_asr_candidate(self) -> None:
+        original = "# 週會報\n- 阿霧負責聯絡，阿霧晚點確認，阿霧再回報。\n"
+        revised = "# 週會報\n- 阿鳴負責聯絡，阿霧晚點確認，阿霧再回報。\n"
+        candidates = infer_partial_asr_candidates(original, revised, "阿霧負責聯絡，阿霧晚點確認。")
+        self.assertTrue(any(
+            item.source_text == "阿霧" and item.canonical_term == "阿鳴"
+            for item in candidates
+        ))
 
     def test_explicit_human_mapping_wins_when_merging_same_ai_candidate(self) -> None:
         explicit = parse_explicit_corrections("信息 -> 新興")
