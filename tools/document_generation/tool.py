@@ -206,6 +206,7 @@ def _build_script_docx(title: str, subtitle: str, slides_data: list[dict[str, ob
     document = Document()
     document.core_properties.title = f"{title}－口說稿"
     document.add_heading(title, level=0)
+    document.add_paragraph("口說稿")
     if subtitle:
         document.add_paragraph(subtitle)
     document.add_paragraph("以下依投影片順序整理口說重點與講稿。")
