@@ -23,6 +23,60 @@ LOGGER = logging.getLogger(__name__)
 SUPPORTED_MEETING_AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".opus", ".webm", ".mp4"}
 MAX_MEETING_AUDIO_BYTES = 250 * 1024 * 1024
 LOW_CONFIDENCE_THRESHOLD = 0.55
+DEFAULT_MEETING_TIME = "20:30:00"
+
+_TIMECODE_TOKEN = r"\[\d{2}:\d{2}:\d{2}-\d{2}:\d{2}:\d{2}\]"
+_TIMECODE_EVIDENCE_RE = re.compile(
+    rf"(?:[（(]\s*)?{_TIMECODE_TOKEN}(?:\s*[、,，/]\s*{_TIMECODE_TOKEN})*(?:\s*[）)])?"
+)
+_TIMECODE_THEN_MEO_RE = re.compile(
+    rf"(?P<evidence>(?:[（(]\s*)?{_TIMECODE_TOKEN}(?:\s*[、,，/]\s*{_TIMECODE_TOKEN})*(?:\s*[）)])?)"
+    r"\s*(?P<particle>喵)(?P<punct>[。！？!?]?)"
+)
+
+
+def resolve_meeting_schedule(
+    uploaded_at: datetime,
+    meeting_date: str | None = None,
+    meeting_time: str | None = None,
+) -> tuple[str, str]:
+    date_text = (meeting_date or "").strip() or uploaded_at.strftime("%Y-%m-%d")
+    try:
+        parsed_date = datetime.strptime(date_text, "%Y-%m-%d")
+    except ValueError as error:
+        raise ValueError("meeting_date 請使用 YYYY-MM-DD，例如 2026-09-24。") from error
+
+    time_text = (meeting_time or "").strip() or DEFAULT_MEETING_TIME
+    parsed_time = None
+    for pattern in ("%H:%M:%S", "%H:%M"):
+        try:
+            parsed_time = datetime.strptime(time_text, pattern)
+            break
+        except ValueError:
+            continue
+    if parsed_time is None:
+        raise ValueError("meeting_time 請使用 HH:MM 或 HH:MM:SS，例如 20:30:00。")
+
+    return parsed_date.strftime("%Y-%m-%d"), parsed_time.strftime("%H:%M:%S")
+
+
+def normalize_report_timecode_particle_order(text: str) -> str:
+    """Keep the persona particle before evidence timecodes in review drafts."""
+    return _TIMECODE_THEN_MEO_RE.sub(
+        lambda match: f"{match.group('particle')} {match.group('evidence')}{match.group('punct')}",
+        text,
+    )
+
+
+def strip_report_timecodes(text: str) -> str:
+    """Remove recording-evidence timecodes from the formally published report."""
+    cleaned = _TIMECODE_EVIDENCE_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]+([。！？!?，,；;：:])", r"\1", cleaned)
+    cleaned = re.sub(r"[（(]\s*[）)]", "", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned
+
+
 
 
 @dataclass(slots=True)
@@ -68,7 +122,7 @@ def build_meeting_report_prompt(title: str, transcript: str) -> str:
         "2. 明確區分『已完成／已測試』、『正在做』、『提案／討論』、『決議』與『尚未驗證』。\n"
         "3. 沒有明確說出負責人、日期、數字或結論時，寫『未指定／待確認』，不得自行補。\n"
         "4. 標有『低信心』的句子不可單獨當成正式決議；必要時放進『待確認』。\n"
-        "5. 重要成果、決議與待辦盡量附上逐字稿時間碼，方便回查原音檔。\n"
+        "5. 重要成果、決議與待辦盡量附上逐字稿時間碼，方便回查原音檔；若句尾使用「喵」，必須寫在時間碼之前，例如「內容喵（[00:01:00-00:01:10]）」。\n"
         "6. 不要宣稱轉錄或實測已成功，除非逐字稿明確如此說。\n"
         "7. 報告結構固定為：會議摘要、本週進度、討論事項、問題與風險、會議決議、下週待辦、待確認事項。\n"
         f"\n會議名稱：{title.strip() or '遊戲週會'}\n\n"
@@ -194,14 +248,27 @@ class MeetingReportCommands(commands.Cog):
         self.bot.tree.remove_command(self._message_menu.name, type=self._message_menu.type)
 
     @app_commands.command(name="meeting_report", description="上傳 MP3/WAV 等錄音，以本地 Whisper 整理成週會報")
-    @app_commands.describe(audio="會議錄音檔", title="週會名稱，例如：明日之後週會")
+    @app_commands.describe(
+        audio="會議錄音檔",
+        title="週會名稱，例如：明日之後週會",
+        meeting_date="週會日期 YYYY-MM-DD；留空使用檔案上傳日",
+        meeting_time="週會時間 HH:MM 或 HH:MM:SS；留空預設 20:30:00",
+    )
     async def meeting_report(
         self,
         interaction: discord.Interaction,
         audio: discord.Attachment,
         title: str = "遊戲週會",
+        meeting_date: str | None = None,
+        meeting_time: str | None = None,
     ) -> None:
-        await self._run_report(interaction, audio, title)
+        await self._run_report(
+            interaction,
+            audio,
+            title,
+            meeting_date=meeting_date,
+            meeting_time=meeting_time,
+        )
 
     async def meeting_report_context(self, interaction: discord.Interaction, message: discord.Message) -> None:
         audio = next(
@@ -219,10 +286,16 @@ class MeetingReportCommands(commands.Cog):
             )
             return
         title = Path(audio.filename).stem or "遊戲週會"
-        await self._run_report(interaction, audio, title)
+        await self._run_report(interaction, audio, title, meeting_date=None, meeting_time=None)
 
     async def _run_report(
-        self, interaction: discord.Interaction, attachment: discord.Attachment, title: str
+        self,
+        interaction: discord.Interaction,
+        attachment: discord.Attachment,
+        title: str,
+        *,
+        meeting_date: str | None = None,
+        meeting_time: str | None = None,
     ) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("此功能僅限伺服器頻道。", ephemeral=True)
@@ -263,6 +336,15 @@ class MeetingReportCommands(commands.Cog):
             transcript_json = job_root / "transcript.json"
             await interaction.edit_original_response(content="本地逐字稿已完成，墨雪正在依逐字稿整理週會報。")
             report = await self._generate_report(title, transcription.text)
+            report = normalize_report_timecode_particle_order(report)
+            uploaded_at = interaction.created_at.astimezone()
+            try:
+                meeting_date_value, meeting_time_value = resolve_meeting_schedule(
+                    uploaded_at, meeting_date, meeting_time
+                )
+            except ValueError as error:
+                await interaction.edit_original_response(content=str(error))
+                return
             stamp = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
             report_path = job_root / f"report_{stamp}.md"
             report_path.write_text(report.rstrip() + "\n", encoding="utf-8")
