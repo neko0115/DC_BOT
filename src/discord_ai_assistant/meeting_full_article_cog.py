@@ -16,13 +16,21 @@ from discord.ext import commands
 import discord_ai_assistant.meeting_feedback_cog as feedback_module
 from discord_ai_assistant.ai.gemini import GeminiRequestError
 from discord_ai_assistant.ai.persona import BASE_PERSONA_INSTRUCTION
-from discord_ai_assistant.meeting_feedback import FeedbackCandidate, merge_candidates, parse_ai_candidates
+from discord_ai_assistant.meeting_feedback import (
+    FeedbackCandidate,
+    infer_partial_asr_candidates,
+    merge_candidates,
+    parse_ai_candidates,
+)
 from discord_ai_assistant.meeting_feedback_cog import (
     MeetingReportCommands as FeedbackMeetingReportCommands,
     MeetingReportReviewView as LegacyMeetingReportReviewView,
     _candidate_label,
 )
-from discord_ai_assistant.meeting_upload import build_meeting_report_prompt
+from discord_ai_assistant.meeting_upload import (
+    build_meeting_report_prompt,
+    normalize_report_timecode_particle_order,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -386,7 +394,7 @@ class MeetingReportCommands(FeedbackMeetingReportCommands):
                 prompt,
                 persona_instruction=persona_instruction,
             )
-        result = str(text).strip()
+        result = normalize_report_timecode_particle_order(str(text).strip())
         if not result:
             raise RuntimeError("Gemini 沒有回傳週會報內容。")
         return result
@@ -583,6 +591,8 @@ class MeetingReportCommands(FeedbackMeetingReportCommands):
             "- report_preference：人工修改反映未來同 Profile 都應遵守的穩定格式／寫法偏好。\n"
             "禁止把本次會議的一次性事件、日期、數字、負責人、Boss 安排、戰術決議當成長期學習。\n"
             "只有從『原草稿 ↔ 人工完整修正版』差異能明確支持的項目才能提出；不確定就省略。"
+            "若同一錯詞在原稿出現多次，只要人工修正版至少明確修正其中一次，就仍應提出 asr_alias 候選；"
+            "不要因為其他相同出現位置尚未全部修改而省略，是否學習由後續人工勾選決定。"
             "不得使用外部知識、記憶或自行猜測。\n"
             "只回傳 JSON，不要 Markdown：\n"
             '{"candidates":[{"kind":"asr_alias|domain_term|report_preference","source_text":"",'
@@ -603,7 +613,8 @@ class MeetingReportCommands(FeedbackMeetingReportCommands):
         except Exception:
             LOGGER.warning("Could not propose full-article meeting learning candidates", exc_info=True)
             return []
-        return merge_candidates(parse_ai_candidates(str(response)))
+        inferred = infer_partial_asr_candidates(report, correction_text, transcript)
+        return merge_candidates(inferred, parse_ai_candidates(str(response)))
 
     def _latest_recoverable_revision(
         self, guild_id: int, user_id: int

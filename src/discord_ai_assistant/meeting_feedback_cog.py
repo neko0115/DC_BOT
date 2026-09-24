@@ -27,6 +27,8 @@ from discord_ai_assistant.meeting_upload import (
     format_meeting_timestamp,
     format_timestamped_transcript,
     is_supported_meeting_audio,
+    normalize_report_timecode_particle_order,
+    resolve_meeting_schedule,
 )
 from discord_ai_assistant.meeting_upload_glossary import (
     MeetingReportCommands as KnowledgeMeetingReportCommands,
@@ -395,7 +397,13 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
         return result
 
     async def _run_report(
-        self, interaction: discord.Interaction, attachment: discord.Attachment, title: str
+        self,
+        interaction: discord.Interaction,
+        attachment: discord.Attachment,
+        title: str,
+        *,
+        meeting_date: str | None = None,
+        meeting_time: str | None = None,
     ) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("此功能僅限伺服器頻道。", ephemeral=True)
@@ -408,6 +416,15 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
                 "錄音格式不支援或檔案超過 250 MiB。支援 MP3/WAV/M4A/FLAC/OGG/OPUS/WEBM/MP4。",
                 ephemeral=True,
             )
+            return
+
+        uploaded_at = interaction.created_at.astimezone(self._local_zone())
+        try:
+            meeting_date_value, meeting_time_value = resolve_meeting_schedule(
+                uploaded_at, meeting_date, meeting_time
+            )
+        except ValueError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
             return
 
         snapshot = self._knowledge_for(interaction.guild.id, title)
@@ -440,18 +457,20 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
             await interaction.edit_original_response(
                 content="本地逐字稿已完成，墨雪正在依逐字稿、領域詞庫與已核准格式偏好整理草稿。"
             )
-            report_body = await self._generate_report_with_feedback(
-                title=title,
-                transcript=transcription.text,
-                guild_id=interaction.guild.id,
-                snapshot=snapshot,
+            report_body = normalize_report_timecode_particle_order(
+                await self._generate_report_with_feedback(
+                    title=title,
+                    transcript=transcription.text,
+                    guild_id=interaction.guild.id,
+                    snapshot=snapshot,
+                )
             )
-            generated_at = interaction.created_at.astimezone(self._local_zone())
+            generated_at = uploaded_at
             duration = format_meeting_timestamp(transcription.duration_seconds)
             profile_name = snapshot.profile.display_name if snapshot is not None else "未指定"
             report = (
-                f"> 📅 **週會報日期：** {generated_at:%Y-%m-%d}\n"
-                f"> 🕒 **產生時間：** {generated_at:%H:%M} ({generated_at.tzname() or 'local'})\n"
+                f"> 📅 **週會日期：** {meeting_date_value}\n"
+                f"> 🕒 **週會時間：** {meeting_time_value}\n"
                 f"> 🎧 **錄音長度：** {duration}\n"
                 f"> 📚 **Knowledge Profile：** {profile_name}\n\n"
                 f"{report_body.strip()}\n"
@@ -473,6 +492,8 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
                 "requested_by": interaction.user.id,
                 "configured_target_channel_id": target_id,
                 "knowledge_profile": snapshot.profile.key if snapshot is not None else None,
+                "meeting_date": meeting_date_value,
+                "meeting_time": meeting_time_value,
                 "report_file": report_path.name,
             }
             review_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -636,6 +657,8 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
             "- domain_term：人工修正明確提供了一個專有名詞及其可重用的簡短詞義。\n"
             "- report_preference：人工明確提出未來都應遵守的格式／寫作偏好。\n"
             "一次性的會議事實、數字、負責人、時間、戰術結論不得變成可重用學習候選。\n"
+            "若同一錯詞出現多次，只要人工至少明確修正其中一次，仍應提出 asr_alias 候選；"
+            "不要因其他出現位置未全部改完而省略，最終是否學習由人工勾選決定。\n"
             "不確定就不要提出。不得使用外部知識。\n"
             "只回傳 JSON，不要 Markdown：\n"
             '{"candidates":[{"kind":"asr_alias|domain_term|report_preference","source_text":"",'
@@ -803,9 +826,12 @@ class MeetingReportCommands(KnowledgeMeetingReportCommands):
         now = datetime.now().astimezone(self._local_zone())
         duration = format_meeting_timestamp(reviewed.duration_seconds)
         profile_name = snapshot.profile.display_name if snapshot is not None else "未指定"
+        meeting_date_value = str(review.get("meeting_date") or now.strftime("%Y-%m-%d"))
+        meeting_time_value = str(review.get("meeting_time") or "20:30:00")
+        report_body = normalize_report_timecode_particle_order(report_body)
         report = (
-            f"> 📅 **週會報日期：** {now:%Y-%m-%d}\n"
-            f"> 🕒 **重新整理時間：** {now:%H:%M} ({now.tzname() or 'local'})\n"
+            f"> 📅 **週會日期：** {meeting_date_value}\n"
+            f"> 🕒 **週會時間：** {meeting_time_value}\n"
             f"> 🎧 **錄音長度：** {duration}\n"
             f"> 📚 **Knowledge Profile：** {profile_name}\n"
             f"> ✏️ **人工修訂版本：** #{revision_id}\n\n"

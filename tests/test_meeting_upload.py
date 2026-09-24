@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -12,6 +13,9 @@ from discord_ai_assistant.meeting_upload import (
     format_meeting_timestamp,
     format_timestamped_transcript,
     is_supported_meeting_audio,
+    normalize_report_timecode_particle_order,
+    resolve_meeting_schedule,
+    strip_report_timecodes,
 )
 
 
@@ -42,6 +46,28 @@ class MeetingUploadTests(unittest.TestCase):
         self.assertIn("未指定／待確認", prompt)
         self.assertIn("尚未驗證", prompt)
         self.assertIn("低信心", prompt)
+
+    def test_meeting_schedule_defaults_to_upload_date_and_2030(self) -> None:
+        uploaded = datetime(2026, 9, 24, 8, 15, tzinfo=timezone.utc)
+        date_text, time_text = resolve_meeting_schedule(uploaded)
+        self.assertEqual(date_text, "2026-09-24")
+        self.assertEqual(time_text, "20:30:00")
+
+    def test_meeting_schedule_accepts_user_override_and_normalizes_seconds(self) -> None:
+        uploaded = datetime(2026, 9, 24, 8, 15, tzinfo=timezone.utc)
+        self.assertEqual(
+            resolve_meeting_schedule(uploaded, "2026-09-23", "19:45"),
+            ("2026-09-23", "19:45:00"),
+        )
+        with self.assertRaisesRegex(ValueError, "meeting_time"):
+            resolve_meeting_schedule(uploaded, None, "25:99")
+
+    def test_review_timecodes_keep_meow_before_evidence_and_publish_strips_evidence(self) -> None:
+        draft = "- 決議已確認（[00:02:26-00:02:37]、[00:04:18-00:04:29]）喵。"
+        normalized = normalize_report_timecode_particle_order(draft)
+        self.assertIn("決議已確認喵 （[00:02:26-00:02:37]、[00:04:18-00:04:29]）。", normalized)
+        published = strip_report_timecodes(normalized)
+        self.assertEqual(published, "- 決議已確認喵。")
 
     def test_local_transcriber_preserves_segment_timestamps(self) -> None:
         class FakeModel:

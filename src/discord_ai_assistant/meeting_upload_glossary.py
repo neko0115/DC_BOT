@@ -33,6 +33,9 @@ from discord_ai_assistant.meeting_upload import (
     format_meeting_timestamp,
     format_timestamped_transcript,
     is_supported_meeting_audio,
+    normalize_report_timecode_particle_order,
+    resolve_meeting_schedule,
+    strip_report_timecodes,
 )
 
 
@@ -329,7 +332,13 @@ class MeetingReportCommands(BaseMeetingReportCommands):
         return self.knowledge_store.snapshot(guild_id, title)
 
     async def _run_report(
-        self, interaction: discord.Interaction, attachment: discord.Attachment, title: str
+        self,
+        interaction: discord.Interaction,
+        attachment: discord.Attachment,
+        title: str,
+        *,
+        meeting_date: str | None = None,
+        meeting_time: str | None = None,
     ) -> None:
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("此功能僅限伺服器頻道。", ephemeral=True)
@@ -342,6 +351,15 @@ class MeetingReportCommands(BaseMeetingReportCommands):
                 "錄音格式不支援或檔案超過 250 MiB。支援 MP3/WAV/M4A/FLAC/OGG/OPUS/WEBM/MP4。",
                 ephemeral=True,
             )
+            return
+
+        uploaded_at = interaction.created_at.astimezone(self._local_zone())
+        try:
+            meeting_date_value, meeting_time_value = resolve_meeting_schedule(
+                uploaded_at, meeting_date, meeting_time
+            )
+        except ValueError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
             return
 
         snapshot = self._knowledge_for(interaction.guild.id, title)
@@ -374,13 +392,15 @@ class MeetingReportCommands(BaseMeetingReportCommands):
             await interaction.edit_original_response(
                 content="本地逐字稿已完成，墨雪正在依逐字稿與領域詞庫整理週會報草稿。"
             )
-            report_body = await self._generate_report(title, transcription.text)
-            generated_at = interaction.created_at.astimezone(self._local_zone())
+            report_body = normalize_report_timecode_particle_order(
+                await self._generate_report(title, transcription.text)
+            )
+            generated_at = uploaded_at
             duration = format_meeting_timestamp(transcription.duration_seconds)
             profile_name = snapshot.profile.display_name if snapshot is not None else "未指定"
             report = (
-                f"> 📅 **週會報日期：** {generated_at:%Y-%m-%d}\n"
-                f"> 🕒 **產生時間：** {generated_at:%H:%M} ({generated_at.tzname() or 'local'})\n"
+                f"> 📅 **週會日期：** {meeting_date_value}\n"
+                f"> 🕒 **週會時間：** {meeting_time_value}\n"
                 f"> 🎧 **錄音長度：** {duration}\n"
                 f"> 📚 **Knowledge Profile：** {profile_name}\n\n"
                 f"{report_body.strip()}\n"
@@ -400,6 +420,8 @@ class MeetingReportCommands(BaseMeetingReportCommands):
                 "requested_by": interaction.user.id,
                 "configured_target_channel_id": target_id,
                 "knowledge_profile": snapshot.profile.key if snapshot is not None else None,
+                "meeting_date": meeting_date_value,
+                "meeting_time": meeting_time_value,
                 "report_file": report_path.name,
             }
             review_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -503,12 +525,15 @@ class MeetingReportCommands(BaseMeetingReportCommands):
         self, channel: discord.TextChannel | discord.Thread, report_path: Path, title: str
     ) -> None:
         report = report_path.read_text(encoding="utf-8")
-        chunks = _discord_chunks(report)
+        published_report = strip_report_timecodes(report)
+        published_path = report_path.with_name(f"{report_path.stem}_published.md")
+        published_path.write_text(published_report.rstrip() + "\n", encoding="utf-8")
+        chunks = _discord_chunks(published_report)
         safe_title = _safe_filename(title, "meeting")
         if not chunks:
             raise RuntimeError("週會報內容為空。")
 
-        exports = await asyncio.to_thread(build_meeting_report_exports, report_path, title=title)
+        exports = await asyncio.to_thread(build_meeting_report_exports, published_path, title=title)
         await channel.send(
             content=chunks[0],
             files=[
