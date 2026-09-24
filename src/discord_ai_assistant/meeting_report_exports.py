@@ -5,12 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document
-from docx.enum.text import WD_BREAK
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
 
-_MARKDOWN_INLINE_RE = re.compile(r"(\*\*|__|~~|\`)")
+_MARKDOWN_INLINE_RE = re.compile(r"(\*\*|__|~~|`)")
 _LINK_RE = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _BULLET_RE = re.compile(r"^\s*[-*+]\s+(.+?)\s*$")
