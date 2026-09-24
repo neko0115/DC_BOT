@@ -12,6 +12,7 @@ from pathlib import Path
 
 import aiohttp
 from aiohttp import web
+from dotenv import load_dotenv
 
 from discord_ai_assistant.voice.language_routing import normalize_tts_language
 
@@ -20,6 +21,14 @@ MAX_TEXT_CHARACTERS = 400
 MAX_UPSTREAM_AUDIO_BYTES = 32 * 1024 * 1024
 UPSTREAM_HEALTH_TIMEOUT_SECONDS = 2.0
 UPSTREAM_HEALTH_CACHE_SECONDS = 2.0
+
+
+def load_worker_dotenv(project_root: Path | None = None) -> Path:
+    """Load worker settings from the repository .env without overriding explicit env vars."""
+    root = project_root or Path(__file__).resolve().parents[3]
+    env_path = root / ".env"
+    load_dotenv(env_path, override=False)
+    return env_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,6 +499,7 @@ class MoxueTTSWorkerServer:
 
 
 def main() -> None:
+    load_worker_dotenv()
     settings = load_worker_settings()
     logging.basicConfig(
         level=logging.INFO,
